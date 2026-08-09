@@ -9,6 +9,7 @@ import { queueEmail, getTemplate } from '../core/mail.js';
 import { createMagicLink, SESSION_COOKIE, consumeMagicLink } from '../core/auth.js';
 import { cookieHeader } from '../http/request.js';
 import { scheduledSessions, agendaByDay, localTime } from '../core/schedule.js';
+import { buildIcs, uidFor, nextSequence } from '../core/ics.js';
 import { findEvent, dateOnly, fullName, empty, when } from './shared.js';
 
 export function mountPublic(router) {
@@ -28,6 +29,53 @@ export function mountPublic(router) {
 
   router.get('/embed/:event/:embed', embedFeed,
     'A styled HTML fragment of the agenda or speakers, for embedding in another site.');
+
+  router.get('/agenda/:event/:code.ics', sessionIcs,
+    'A calendar entry for one published session, for attendees to add to their own calendar.');
+}
+
+/**
+ * A downloadable calendar entry for a published session.
+ *
+ * Speakers get theirs emailed as an invite they can accept; attendees get this,
+ * which is the same event at the same UID, so somebody who is both does not end
+ * up with two entries.
+ */
+function sessionIcs(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const code = String(ctx.params.code).toUpperCase();
+
+  const session = ctx.db.prepare(
+    `SELECT s.*, r.name AS room_name FROM submission s
+       LEFT JOIN room r ON r.id = s.room_id
+      WHERE s.event_id = ? AND s.code = ? AND s.status = 'accepted' AND s.published = 1`,
+  ).get(event.id, code);
+
+  if (!session || !session.starts_at) {
+    throw notFound(`no published session '${code}' in this event`,
+      `the published schedule is at /agenda/${event.slug}`);
+  }
+
+  const body = buildIcs({
+    uid: uidFor(event.slug, session.code),
+    sequence: nextSequence(ctx.db, session.id),
+    title: `${session.title} (${event.name})`,
+    description: session.description,
+    location: [session.room_name, event.location].filter(Boolean).join(', '),
+    startsAt: session.starts_at,
+    endsAt: session.ends_at,
+    url: event.website_url,
+  });
+
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'text/calendar; charset=utf-8',
+      'content-disposition': `attachment; filename="${session.code.toLowerCase()}.ics"`,
+      'cache-control': 'public, max-age=300',
+    },
+    body,
+  };
 }
 
 function home(ctx) {
@@ -400,7 +448,7 @@ function publicAgenda(ctx) {
       ${sessions.length === 0 ? empty('The schedule is not published yet.') : days.map(({ day, sessions: list }) => html`
         <h2>${day}</h2>
         <table>
-          <thead><tr><th>Time</th><th>Session</th><th>Room</th><th>Track</th></tr></thead>
+          <thead><tr><th>Time</th><th>Session</th><th>Room</th><th>Track</th><th>Add</th></tr></thead>
           <tbody>
             ${list.map((s) => html`
               <tr>
@@ -408,6 +456,8 @@ function publicAgenda(ctx) {
                 <td><strong>${s.title}</strong><br><span class="muted">${speakerNames(ctx.db, s.id)}</span></td>
                 <td>${s.room_name ?? ''}</td>
                 <td>${s.track_name ?? ''}</td>
+                <td><a href="/agenda/${event.slug}/${s.code}.ics"
+                       title="Add ${s.code} to your calendar">calendar</a></td>
               </tr>`)}
           </tbody>
         </table>`)}

@@ -51,11 +51,22 @@ function patternToRegex(pattern) {
   const source = pattern
     .split('/')
     .map((segment) => {
-      if (segment.startsWith(':')) return `(?<${segment.slice(1)}>[^/]+)`;
-      return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (!segment.startsWith(':')) return escapeRegex(segment);
+
+      // A parameter may carry a literal suffix, as in `:code.ics`, so a URL can
+      // end in a file extension that clients care about. The capture is lazy so
+      // the suffix binds to the end rather than being swallowed by the name.
+      const [name, ...suffix] = segment.slice(1).split('.');
+      return suffix.length === 0
+        ? `(?<${name}>[^/]+)`
+        : `(?<${name}>[^/]+?)${escapeRegex(`.${suffix.join('.')}`)}`;
     })
     .join('/');
   return new RegExp(`^${source}/?$`);
+}
+
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // --- responses -------------------------------------------------------------

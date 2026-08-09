@@ -9,6 +9,7 @@ import {
   agendaByDay, agendaByRoom, localTime,
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
+import { sendCalendarInvite } from '../core/ics.js';
 import {
   findEvent, findSubmission, requireOrganizer, organizerNav, statusPill, statusCounts,
   STATUS_TABS, STATUS_LABELS, tabs, empty, when, dateOnly, fullName,
@@ -306,6 +307,10 @@ function submissionDetail(ctx) {
         ${track ? html` &middot; ${track.name}` : ''}
         ${submission.notified_at ? html` &middot; speaker told ${dateOnly(submission.notified_at, event.timezone)}`
           : html` &middot; <span class="muted">speaker not yet told</span>`}</p>
+
+      ${ctx.query.get('invited') ? html`<p class="flash">Calendar invite sent to
+        ${ctx.query.get('invited')} speaker(s). A reschedule updates the entry already in
+        their calendar rather than adding a second one.</p>` : ''}
 
       ${slotProblems.length > 0 ? html`
         <ul class="alerts">
@@ -650,13 +655,24 @@ function postSchedule(ctx) {
       'pick a different room or time, or move the other session first');
   }
 
+  const moved = submission.starts_at !== startsAt
+    || submission.ends_at !== endsAt
+    || submission.room_id !== (room?.id ?? null);
+
   ctx.db.prepare(
     `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = ?, updated_at = ?
       WHERE id = ?`,
   ).run(room?.id ?? null, startsAt, endsAt, ctx.fields.bool('published') ? 1 : 0,
     new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), submission.id);
 
-  return redirect(`/e/${event.slug}/submissions/${submission.code}`);
+  // Only when the time or room actually changed. Re-saving the form to tick
+  // "publish" should not put another calendar invite in everyone's inbox.
+  // sendCalendarInvite declines on its own for sessions whose speakers have not
+  // been told yet, so a hold cannot appear for a decision nobody has heard.
+  const invited = moved ? sendCalendarInvite(ctx.db, submission.id) : null;
+
+  return redirect(`/e/${event.slug}/submissions/${submission.code}`
+    + (invited ? `?invited=${invited.messages}` : ''));
 }
 
 // --- speakers, tasks, review, outbox ---------------------------------------
