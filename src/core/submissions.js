@@ -98,6 +98,22 @@ export function peekNextCode(db, eventId, prefix = 'SESS') {
   return `${prefix}-${row.code_counter + 1}`;
 }
 
+/**
+ * Move the counter past a code that was assigned by hand.
+ *
+ * An import, or a migration from another system, arrives with codes already on
+ * it. Without this the counter still reads zero, and the next submission
+ * created through the app is handed SESS-1 again -- which either collides
+ * outright or, worse, quietly reuses a code that is already in somebody's inbox.
+ */
+export function reserveCode(db, eventId, code, prefix = 'SESS') {
+  const match = new RegExp(`^${prefix}-(\\d+)$`).exec(String(code));
+  if (!match) return;
+
+  db.prepare('UPDATE event SET code_counter = max(code_counter, ?) WHERE id = ?')
+    .run(Number(match[1]), eventId);
+}
+
 export function participantsOf(db, submissionId) {
   return db.prepare(
     `SELECT p.*, sp.role, sp.is_primary_contact
@@ -114,6 +130,11 @@ export function createSubmission(db, {
   trackId = null, status = 'draft', code = null,
 }) {
   const t = now();
+
+  // A hand-supplied code has to move the counter with it, or the next
+  // submission created through the app is handed the same one.
+  if (code) reserveCode(db, eventId, code);
+
   const row = db.prepare(
     `INSERT INTO submission (event_id, code, form_id, submitted_by_person_id,
                              title, description, track_id, status, created_at, updated_at)

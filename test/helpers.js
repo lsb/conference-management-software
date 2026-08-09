@@ -1,4 +1,4 @@
-import { openDatabase, now } from '../src/db.js';
+import { openDatabase, now, uniqueSlug } from '../src/db.js';
 
 /** An in-memory database with one event, ready for tests to build on. */
 export function newEvent({ name = 'Conf 2026', slug = 'conf-2026' } = {}) {
@@ -14,10 +14,15 @@ export function newEvent({ name = 'Conf 2026', slug = 'conf-2026' } = {}) {
 
 export function addPerson(db, { first = 'Ada', last = 'Lovelace', email = 'ada@example.com' } = {}) {
   const t = now();
+  // Slugged the way the app slugs, so two people with the same name are as
+  // possible here as they are in production. Duplicates are the whole subject of
+  // some of these tests.
+  const slug = uniqueSlug(`${first} ${last}`,
+    (s) => Boolean(db.prepare('SELECT 1 FROM person WHERE slug = ?').get(s)));
   return db.prepare(
     `INSERT INTO person (slug, email, first_name, last_name, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
-  ).get(`${first}-${last}`.toLowerCase(), email, first, last, t, t);
+  ).get(slug, email, first, last, t, t);
 }
 
 export function addSpeaker(db, submissionId, personId, { primary = false, order = 0 } = {}) {
