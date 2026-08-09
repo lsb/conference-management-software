@@ -19,6 +19,72 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 6 — 2026-08-09, the first run at the tightened bar
+
+**10/10 at 3 passes out of 5.** Nine of the ten were perfect: three attempts,
+three passes, stop.
+
+| Task | Result | Succeeded | Attempts run | Time |
+| --- | --- | --- | --- | --- |
+| `accept-one` | pass | 3/3 | 3 | 205s |
+| `count-pending` | pass | **3/4** | 4 | 236s |
+| `decide-then-notify` | pass | 3/3 | 3 | 177s |
+| `find-speaker-clash` | pass | 3/3 | 3 | 208s |
+| `mail-audience-size` | pass | 3/3 | 3 | 564s |
+| `mail-outstanding-send` | pass | 3/3 | 3 | 653s |
+| `public-session-search` | pass | 3/3 | 3 | 383s |
+| `reviewer-workload` | pass | 3/3 | 3 | 453s |
+| `who-owes-headshot` | pass | 3/3 | 3 | 159s |
+| `who-owes-slides` | pass | 3/3 | 3 | 385s |
+
+The headline is not the 10/10. It is that the *stricter bar immediately found
+something the old one had been hiding*, on the very first task, in the simplest
+question in the suite.
+
+### Four rows and a header
+
+`count-pending` — "how many submissions are waiting for a decision?" — passed
+three times and failed once. The failing attempt:
+
+```
+$ ./bin/conf submissions manzanita-2026 --status pending
+$ ./bin/conf submissions manzanita-2026 --status pending | wc -l
+```
+
+It answered **5**. There are four. The fifth line was the column header.
+
+Under the old bar this task passed on its first attempt and we would never have
+seen it. It had presumably been failing about one time in four all along.
+
+Nothing about that is the model being careless. Piping a list to `wc -l` is what
+anybody does, and our table gives a wrong answer to it. So list commands now
+state their own count:
+
+```
+$ ./bin/conf submissions manzanita-2026 --status pending
+CODE     STATUS   TITLE                                          ...
+SESS-14  pending  Lightning: Our Worst Outage Was a Retry Loop   ...
+SESS-15  pending  Property-Based Testing for Prompt Templates    ...
+SESS-16  pending  Teaching Juniors to Review Model-Written Code  ...
+SESS-17  pending  Running Open-Weight Models on the Hardware ... ...
+
+4 submissions.
+```
+
+Nobody should have to count, and the person who does will sometimes get it wrong
+in the same direction. This is the third time in six runs that the fix has been
+to *say the answer* rather than to leave it derivable — after `--task` for
+filtering tasks, and after naming the three questions the CLI cannot answer.
+
+### What the bar change cost
+
+Thirty-one attempts across ten tasks, about an hour of CPU. Early stopping did
+its job: nine tasks cost three attempts each, and only the flaky one paid for a
+fourth. A 5-of-5 bar would have cost fifty attempts and told us less, because
+the interesting signal is "does this fail sometimes", not "does this ever fail".
+
+---
+
 ## Run 5 — 2026-08-09, the three failures re-run after the fixes
 
 **All three pass, each on the first attempt.** Effective suite score: 10/10.

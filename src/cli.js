@@ -206,7 +206,7 @@ const COMMANDS = {
         WHERE ${where.join(' AND ')} ORDER BY s.code`,
     ).all(...params);
 
-    return output(args, rows, 'No submissions match.');
+    return output(args, rows, 'No submissions match.', 'submission');
   },
 
   show(db, args) {
@@ -246,7 +246,7 @@ const COMMANDS = {
     const rows = awaitingNotification(db, event.id).map((s) => ({
       code: s.code, decision: s.status === 'accept_queue' ? 'accept' : 'decline', title: s.title,
     }));
-    return output(args, rows, 'Nothing is waiting to be sent.');
+    return output(args, rows, 'Nothing is waiting to be sent.', 'submission');
   },
 
   notify(db, args) {
@@ -368,7 +368,7 @@ const COMMANDS = {
         WHERE s.event_id = ? AND s.status IN ('accept_queue','accepted')
         GROUP BY p.id ORDER BY p.last_name, p.first_name`,
     ).all(event.id, event.id);
-    return output(args, rows, 'Nobody has been accepted yet.');
+    return output(args, rows, 'Nobody has been accepted yet.', 'speaker');
   },
 
   /**
@@ -399,7 +399,8 @@ const COMMANDS = {
     ).all(event.id, args.q ?? null, args.q ?? null, args.q ?? null);
 
     return output(args, rows,
-      args.q ? `Nothing published matches '${args.q}'.` : 'Nothing is published yet.');
+      args.q ? `Nothing published matches '${args.q}'.` : 'Nothing is published yet.',
+      'published session');
   },
 
   /** Who is behind on reviewing, which is the only reason to look. */
@@ -420,7 +421,7 @@ const COMMANDS = {
         ORDER BY outstanding DESC, p.last_name`,
     ).all(event.id);
 
-    return output(args, rows, 'Nobody has been assigned any reviews yet.');
+    return output(args, rows, 'Nobody has been assigned any reviews yet.', 'reviewer');
   },
 
   /** The named groups a bulk message can go to, and how many people each is. */
@@ -429,7 +430,7 @@ const COMMANDS = {
     const rows = audienceSizes(db, event.id).map((a) => ({
       audience: a.key, people: a.count, description: a.description,
     }));
-    return output(args, rows, 'No audiences.');
+    return output(args, rows, 'No audiences.', 'audience');
   },
 
   /**
@@ -570,7 +571,7 @@ const COMMANDS = {
       `SELECT created_at, to_email, kind, subject FROM outbox
         WHERE event_id = ? ORDER BY id DESC LIMIT ?`,
     ).all(event.id, limit);
-    return output(args, rows, 'No messages yet.');
+    return output(args, rows, 'No messages yet.', 'message');
   },
 
   'portal-link'(db, args) {
@@ -651,7 +652,7 @@ function fail(message, hint) {
 }
 
 /** Print rows as an aligned table, or as JSON when asked. */
-function output(args, rows, emptyMessage = 'Nothing to show.') {
+function output(args, rows, emptyMessage = 'Nothing to show.', noun = 'row') {
   if (args.json) {
     process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`);
     return 0;
@@ -676,6 +677,12 @@ function output(args, rows, emptyMessage = 'Nothing to show.') {
 
   console.log(line(columns.map((c) => c.toUpperCase())));
   for (const row of rows) console.log(line(columns.map((c) => row[c])));
+
+  // State the count rather than leaving it to be worked out. A local model
+  // asked how many submissions were pending piped this table to `wc -l` and
+  // answered 5: four rows and a header. Nobody should have to count, and the
+  // person who does will sometimes get it wrong in the same direction.
+  console.log(`\n${rows.length} ${noun}${rows.length === 1 ? '' : 's'}.`);
   return 0;
 }
 
