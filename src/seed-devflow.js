@@ -20,6 +20,7 @@
 //   npm run seed && npm run seed:devflow
 
 import { DEFAULT_DB_PATH, openDatabase, now, uniqueSlug } from './db.js';
+import { localDay } from './core/schedule.js';
 
 // ---------------------------------------------------------------------------
 // A virtual clock
@@ -294,25 +295,6 @@ try {
       option[`${kind}:${slug}`] = addOption(event.id, kind, slug, label, seen[kind]);
     }
 
-    // The three tracks again, mirrored into the tag vocabulary under identical
-    // slugs.
-    //
-    // This is a shim, and it is here because of a real gap in the public
-    // call-for-papers renderer: it fills a <select> from `taxonomy_option`
-    // keyed by the field's `options_kind`, and `options_kind` is constrained by
-    // the schema to format/level/language/tag. A track dropdown therefore has no
-    // legal value to declare, and renders with no choices in it at all -- a
-    // required field nobody can answer. Mirroring the tracks as tags gives the
-    // dropdown something to show; because the slugs match, the answer resolves
-    // against the real `track` table on the way in, so `submission.track_id`
-    // still lands on the track and not on a tag.
-    //
-    // Delete these three rows the day the renderer resolves a field mapped to
-    // `submission.track_id` from the track table directly. Nothing else reads
-    // the tag vocabulary unless a form asks for it, and this form does not.
-    Object.values(track).forEach((t, i) => {
-      option[`tag:${t.slug}`] = addOption(event.id, 'tag', t.slug, t.name, i + 1);
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -401,7 +383,9 @@ const broken = db.prepare('PRAGMA foreign_key_check').all();
 if (broken.length > 0) throw new Error(`seed left ${broken.length} broken foreign key reference(s)`);
 
 const pad = (s) => String(s).padEnd(16);
-const day = (iso) => iso.slice(0, 10);
+// Dates are stored in UTC and read in San Francisco, where the last afternoon and
+// the closing minute of the call both fall on the day before their UTC one.
+const day = (iso) => localDay(iso, event.timezone);
 
 console.log(`\n${event.name} seeded into ${DB_PATH}\n`);
 console.log(`  ${pad('event')}${event.slug}, ${day(event.starts_at)} to ${day(event.ends_at)}, ${event.location}`);

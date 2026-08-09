@@ -11,6 +11,11 @@ import { cookieHeader } from '../http/request.js';
 import { scheduledSessions } from '../core/schedule.js';
 import { buildIcs, uidFor, nextSequence } from '../core/ics.js';
 import { readStoredFile, isImage } from '../core/files.js';
+import {
+  fieldsOf, isClosed, mappedValues, valueOf, acceptedNames,
+  optionResolver, conditionsFor, renderField,
+} from './formfields.js';
+import { resolvePersonByEmail } from './demo-auth.js';
 import { findEvent, dateOnly, fullName, empty, when } from './shared.js';
 
 export function mountPublic(router) {
@@ -145,91 +150,25 @@ function findForm(db, eventId, slug) {
   return form;
 }
 
-function fieldsOf(db, formId, section) {
-  return db.prepare(
-    'SELECT * FROM form_field WHERE form_id = ? AND section = ? ORDER BY sort_order, id',
-  ).all(formId, section);
-}
 
-function isClosed(form) {
-  return Boolean(form.close_at && form.close_at < now());
-}
 
-/**
- * Collect answers keyed by what they map onto, e.g. `person.first_name`.
- *
- * A field's slug is the organizer's label for it and can be anything --
- * `first-name`, `your_name`, `speaker_first`. Only `maps_to` says where the
- * answer belongs, so that is what the handler reads.
- *
- * The last segment of `maps_to` is accepted as an alias, so an API client or a
- * script can post the obvious `first_name` without first fetching the form
- * definition to learn what this particular organizer called it.
- */
-function mappedValues(fields, formFields) {
-  const out = {};
-  for (const field of formFields) {
-    if (!field.maps_to) continue;
-    const value = valueOf(fields, field);
-    if (value !== '') out[field.maps_to] = value;
-  }
-  return out;
-}
 
-/** One field's answer, accepting either its slug or its `maps_to` alias. */
-function valueOf(fields, field) {
-  const alias = field.maps_to ? field.maps_to.split('.').pop() : null;
-  return fields.get(field.slug) || (alias ? fields.get(alias) : '');
-}
 
-/** The names a caller may use for a field, for error messages. */
-function acceptedNames(field) {
-  const alias = field.maps_to ? field.maps_to.split('.').pop() : null;
-  return alias && alias !== field.slug ? `'${field.slug}' (or '${alias}')` : `'${field.slug}'`;
-}
 
 function cfpForm(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   const form = findForm(ctx.db, event.id, ctx.params.form);
   const closed = isClosed(form);
 
-  const options = (kind) => ctx.db.prepare(
-    'SELECT * FROM taxonomy_option WHERE event_id = ? AND kind = ? ORDER BY sort_order, label',
-  ).all(event.id, kind);
-  const tracks = ctx.db.prepare('SELECT * FROM track WHERE event_id = ? ORDER BY sort_order').all(event.id);
-
-  const renderField = (field) => {
-    const id = `f_${field.slug}`;
-    const label = html`<label for="${id}">${field.label}${field.required ? raw(' <span class="req">*</span>') : ''}
-      ${field.help_text ? html`<small>${field.help_text}</small>` : ''}</label>`;
-
-    if (field.field_type === 'select') {
-      const choices = field.options_kind === 'track'
-        ? tracks.map((t) => ({ slug: t.slug, label: t.name }))
-        : options(field.options_kind ?? '').map((o) => ({ slug: o.slug, label: o.label }));
-      return html`${label}
-        <select id="${id}" name="${field.slug}" ${field.required ? raw('required') : ''}>
-          <option value="">- choose -</option>
-          ${choices.map((c) => html`<option value="${c.slug}">${c.label}</option>`)}
-        </select>`;
-    }
-    if (field.field_type === 'multiselect') {
-      const choices = options(field.options_kind ?? '');
-      return html`${label}
-        <select id="${id}" name="${field.slug}" multiple size="4">
-          ${choices.map((c) => html`<option value="${c.slug}">${c.label}</option>`)}
-        </select>`;
-    }
-    if (field.field_type === 'textarea' || field.field_type === 'richtext') {
-      return html`${label}<textarea id="${id}" name="${field.slug}"
-        ${field.required ? raw('required') : ''}
-        ${field.max_chars ? raw(`maxlength="${field.max_chars}"`) : ''}></textarea>`;
-    }
-    const type = { email: 'email', phone: 'tel', url: 'url', number: 'number', date: 'date' }[field.field_type] ?? 'text';
-    return html`${label}<input type="${type}" id="${id}" name="${field.slug}"
-      ${field.required ? raw('required') : ''}
-      ${field.max_chars ? raw(`maxlength="${field.max_chars}"`) : ''}>`;
-  };
+  // Field rendering is shared with the portal's editor (src/routes/formfields.js)
+  // so a question looks and behaves the same whether it is being answered for
+  // the first time or corrected a week later. It also fixes a dropdown that used
+  // to render empty: tracks live in their own table, not in taxonomy_option, so
+  // the resolver keys on `maps_to` rather than on a taxonomy kind that a track
+  // field can never have.
+  const options = optionResolver(ctx.db, event.id);
+  const conditions = conditionsFor(ctx.db, form.id);
+  const renderOne = (field) => renderField(field, { options, conditions });
 
   return ok(page({
     title: form.external_title || `Submit to ${event.name}`,
@@ -252,13 +191,13 @@ function cfpForm(ctx) {
         <form method="post" action="/submit/${event.slug}/${form.slug}">
           <fieldset>
             <legend>Your proposal</legend>
-            ${fieldsOf(ctx.db, form.id, 'abstract').map(renderField)}
+            ${fieldsOf(ctx.db, form.id, 'abstract').map(renderOne)}
           </fieldset>
 
           ${form.collect_participants ? html`
             <fieldset>
               <legend>About you</legend>
-              ${fieldsOf(ctx.db, form.id, 'participant').map(renderField)}
+              ${fieldsOf(ctx.db, form.id, 'participant').map(renderOne)}
             </fieldset>` : ''}
 
           <div class="actions">
@@ -319,9 +258,14 @@ function postCfp(ctx) {
   const email = mapped['person.email']
     ?? ctx.fields.require('email', 'we need an address to send your confirmation to');
 
-  // One person row per human, matched on email, reused across every event. This
-  // is what makes a returning speaker a returning speaker rather than a stranger.
-  let person = ctx.db.prepare('SELECT * FROM person WHERE email = ? COLLATE NOCASE').get(email);
+  // One person row per human, reused across every event. This is what makes a
+  // returning speaker a returning speaker rather than a stranger.
+  //
+  // Resolution goes through the same alias-tolerant lookup the sign-in page
+  // uses, so somebody who submitted once as ada@work.example and again as
+  // a.lovelace@work.example does not fork into two speakers with half a
+  // biography each. It never creates a row -- that stays below, and explicit.
+  let person = resolvePersonByEmail(ctx.db, email);
   const t = now();
   const first = mapped['person.first_name'] ?? '';
   const last = mapped['person.last_name'] ?? '';

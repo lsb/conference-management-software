@@ -20,6 +20,8 @@ import { mountPortal } from './routes/portal.js';
 import { mountReviewer } from './routes/reviewer.js';
 import { mountMail } from './routes/mail.js';
 import { mountWidgets } from './routes/widgets.js';
+import { mountDemoAuth } from './routes/demo-auth.js';
+import { mountEvaluation } from './routes/evaluation.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -32,6 +34,8 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountReviewer(router);
   mountMail(router);
   mountWidgets(router);
+  mountDemoAuth(router);
+  mountEvaluation(router);
   mountApi(router);
   mountMeta(router);
 

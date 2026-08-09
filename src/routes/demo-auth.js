@@ -86,9 +86,12 @@ function requireDemoLogin() {
  * without widening what the button is called.
  */
 const PERSONAS = [
+  // Labels are chosen so that no label is a prefix of another. An automated
+  // helper that clicks "the control whose label starts with X" has to find
+  // exactly one match, and "Speaker" is a prefix of "Speaker 2".
   { key: 'organizer', label: 'Organizer', email: 'sbek-organizer@example.com', lands: 'organizer' },
   { key: 'speaker', label: 'Speaker', email: 'sbek-speaker@example.com', lands: 'speaker' },
-  { key: 'speaker2', label: 'Speaker 2', email: 'sbek-speaker2@example.com', lands: 'speaker' },
+  { key: 'speaker2', label: 'Co-speaker', email: 'sbek-speaker2@example.com', lands: 'speaker' },
   { key: 'reviewer', label: 'Reviewer', email: 'sbek-reviewer@example.com', lands: 'reviewer' },
 ];
 
@@ -302,9 +305,11 @@ function postLogin(ctx) {
     });
   }
 
-  // The password is read and ignored on purpose: there is no password column in
-  // this schema and there never was one. See demoLoginIsOpen() above for why
-  // accepting anything is defensible here and nowhere else.
+  // The password field is accepted and never looked at, deliberately: there is no
+  // password column in this schema and there never was one. It is on the page
+  // because a sign-in form without one confuses anybody -- or anything -- that
+  // expects to fill in two boxes. See demoLoginIsOpen() above for why accepting
+  // anything at all is defensible here and nowhere else.
   const email = persona ? persona.email : ctx.fields.get('email');
 
   if (email === '') {
