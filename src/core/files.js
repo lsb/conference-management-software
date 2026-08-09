@@ -136,12 +136,18 @@ export function storeUpload(db, { eventId = null, personId = null, upload, accep
   const slug = uniqueSlug(upload.filename.replace(/\.[^.]+$/, '') || 'file',
     (s) => db.prepare('SELECT 1 FROM file WHERE slug = ?').get(s));
 
-  return db.prepare(
+  const file = db.prepare(
     `INSERT INTO file (slug, event_id, uploaded_by_person_id, filename, content_type,
                        byte_size, sha256, storage_path, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
   ).get(slug, eventId, personId, upload.filename, served,
     upload.data.length, sha256, relative, now());
+
+  // Every file is the root of its own lineage until something supersedes it.
+  // Set here rather than by the callers that happen to care about versions, so
+  // a file uploaded through any path can be asked "what other versions exist"
+  // and answer with itself instead of nothing.
+  return db.prepare('UPDATE file SET root_file_id = id WHERE id = ? RETURNING *').get(file.id);
 }
 
 /** Read a stored file back. Returns null if the row or the bytes are missing. */

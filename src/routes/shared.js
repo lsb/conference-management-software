@@ -78,6 +78,7 @@ export function organizerNav(event, current) {
     ['/tasks', 'Tasks'],
     ['/review', 'Review'],
     ['/forms', 'Forms'],
+    ['/files', 'Files'],
     ['/mail', 'Mail'],
     ['/outbox', 'Outbox'],
     ['/settings', 'Settings'],

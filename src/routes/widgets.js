@@ -79,8 +79,12 @@ function publicEvent(db, slug) {
 /**
  * Sessions the public may see.
  *
- * Two gates, both deliberate: the session must be accepted, and its content must
- * be approved for publication. An organizer mid-edit is not broadcasting drafts.
+ * Three gates, all deliberate. The session must be accepted; its content must
+ * be approved, which is somebody saying the words are right; and it must be
+ * published, which is somebody saying the world may now read them. Approval and
+ * publication are separate decisions made by different people at different
+ * times, and collapsing them means either broadcasting drafts or forgetting to
+ * publish finished work.
  */
 function publicSessions(db, eventId) {
   return db.prepare(
@@ -94,7 +98,8 @@ function publicSessions(db, eventId) {
        LEFT JOIN track t ON t.id = s.track_id
        LEFT JOIN taxonomy_option f ON f.id = s.format_option_id
        LEFT JOIN taxonomy_option l ON l.id = s.level_option_id
-      WHERE s.event_id = ? AND s.status = 'accepted' AND s.published = 1
+      WHERE s.event_id = ? AND s.status = 'accepted'
+        AND s.published = 1 AND s.content_status = 'approved'
       ORDER BY s.starts_at IS NULL, s.starts_at, r.sort_order, s.code`,
   ).all(eventId);
 }
@@ -120,7 +125,8 @@ function publicSpeakers(db, eventId) {
        JOIN submission_participant sp ON sp.person_id = p.id
        JOIN submission s ON s.id = sp.submission_id
        LEFT JOIN file f ON f.id = p.headshot_file_id
-      WHERE s.event_id = ? AND s.status = 'accepted' AND s.published = 1
+      WHERE s.event_id = ? AND s.status = 'accepted'
+        AND s.published = 1 AND s.content_status = 'approved'
       ORDER BY p.last_name COLLATE NOCASE, p.first_name COLLATE NOCASE`,
   ).all(eventId);
 }

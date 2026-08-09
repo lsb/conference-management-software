@@ -10,6 +10,7 @@ import {
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
 import { sendCalendarInvite } from '../core/ics.js';
+import { contentPanel } from './content.js';
 import {
   findEvent, findSubmission, requireOrganizer, organizerNav, statusPill, statusCounts,
   STATUS_TABS, STATUS_LABELS, tabs, empty, when, dateOnly, fullName,
@@ -308,6 +309,7 @@ function submissionDetail(ctx) {
         ${submission.notified_at ? html` &middot; speaker told ${dateOnly(submission.notified_at, event.timezone)}`
           : html` &middot; <span class="muted">speaker not yet told</span>`}</p>
 
+      ${ctx.query.get('done') ? html`<p class="flash">${ctx.query.get('done')}</p>` : ''}
       ${ctx.query.get('invited') ? html`<p class="flash">Calendar invite sent to
         ${ctx.query.get('invited')} speaker(s). A reschedule updates the entry already in
         their calendar rather than adding a second one.</p>` : ''}
@@ -382,6 +384,8 @@ function submissionDetail(ctx) {
           </label>
         </div>
       </form>
+
+      ${contentPanel(ctx, event, submission)}
 
       <h2>Reviews</h2>
       ${reviews.length === 0 ? empty('No reviews assigned.') : html`

@@ -11,6 +11,7 @@ import { cookieHeader, clearCookieHeader } from '../http/request.js';
 import { outstandingTasks, completeTask } from '../core/tasks.js';
 import { queueEmail } from '../core/mail.js';
 import { storeUpload, IMAGE_TYPES } from '../core/files.js';
+import { storeVersion } from '../core/content.js';
 import { setStatus, logActivity } from '../core/submissions.js';
 import {
   fieldsOf, isClosed, optionResolver, conditionsFor, renderField,
@@ -641,7 +642,13 @@ function postCompleteTask(ctx) {
   let fileId = null;
   if (instance.requirement === 'file') {
     const upload = ctx.fields.requireFile('upload', 'this task is completed by uploading a file');
-    fileId = storeUpload(ctx.db, { eventId: event.id, personId: person.id, upload }).id;
+    // Uploading again to the same task keeps the earlier file as an older
+    // version rather than overwriting it. A speaker who sends the wrong deck on
+    // Friday and the right one on Monday should not destroy Friday's, and an
+    // organizer who already printed from it needs to see what changed.
+    fileId = storeVersion(ctx.db, {
+      eventId: event.id, personId: person.id, upload, previousId: instance.file_id,
+    }).id;
   }
 
   completeTask(ctx.db, id, { fileId });

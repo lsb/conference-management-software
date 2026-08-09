@@ -24,6 +24,7 @@ import { mountDemoAuth } from './routes/demo-auth.js';
 import { mountEvaluation } from './routes/evaluation.js';
 import { mountSetup } from './routes/setup.js';
 import { mountFormBuilder } from './routes/formbuilder.js';
+import { mountContent } from './routes/content.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -33,6 +34,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountPublic(router);
   mountSetup(router);
   mountFormBuilder(router);
+  mountContent(router);
   mountOrganizer(router);
   mountPortal(router);
   mountReviewer(router);
