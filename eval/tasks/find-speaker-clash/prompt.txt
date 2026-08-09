@@ -1,0 +1,1 @@
+This directory contains a conference management app. In the Manzanita 2026 schedule, one speaker has accidentally been booked into two sessions that overlap in time. Which two session codes are they? Reply with just the two codes.

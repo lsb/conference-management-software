@@ -1,0 +1,1 @@
+This directory contains a conference management app. For the Manzanita 2026 conference, how many submissions are still waiting for a decision from the organizers? Reply with just the number.

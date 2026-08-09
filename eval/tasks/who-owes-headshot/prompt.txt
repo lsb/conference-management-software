@@ -1,0 +1,1 @@
+This directory contains a conference management app. For Manzanita 2026, which speakers have not yet uploaded their headshot? List their names.

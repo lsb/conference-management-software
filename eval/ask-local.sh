@@ -7,7 +7,7 @@
 #
 # Environment:
 #   LOCAL_MODEL     ollama model to use        (default: gemma4:12b-cpu)
-#   LOCAL_TIMEOUT   seconds before giving up   (default: 300)
+#   LOCAL_TIMEOUT   seconds before giving up   (default: 420)
 #   LOCAL_TRACE     path to write the tool trace to (default: discarded)
 #
 # Notes, learned the hard way (see docs/EVAL.md):
@@ -27,7 +27,7 @@
 set -euo pipefail
 
 MODEL="${LOCAL_MODEL:-gemma4:12b-cpu}"
-TIMEOUT="${LOCAL_TIMEOUT:-300}"
+TIMEOUT="${LOCAL_TIMEOUT:-420}"
 TRACE="${LOCAL_TRACE:-/dev/null}"
 
 if [ $# -lt 2 ]; then

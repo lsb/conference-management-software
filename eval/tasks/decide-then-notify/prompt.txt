@@ -1,0 +1,1 @@
+This directory contains a conference management app. For Manzanita 2026, the organizers want to accept submission SESS-16 and let the speaker know straight away. Do both.
