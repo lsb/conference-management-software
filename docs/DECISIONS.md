@@ -106,12 +106,19 @@ wrong.
 ## D7 — The app must be operable by a small local model, and we measure it
 
 **Decision.** `gemma4:12b-cpu`, driven through `opencode`, must complete each core task
-at least once in three attempts (pass@3 = 100%). Results are logged in
-`USABILITY-LOG.md` with verbatim transcripts. Exactly one inference runs at a time.
+**at least 3 times out of 5 attempts**. Results are logged in `USABILITY-LOG.md` with
+verbatim transcripts. Exactly one inference runs at a time.
 
 **Why.** It is a real requirement from the repo owner, and it doubles as a design
 forcing function: legible URLs, honest errors, one obvious way to do each thing. See
 `docs/DESIGN.md`.
+
+**Why it tightened.** The bar began as "at least once in three", which asks whether the
+app is *possible* to use — the right question while the answer was often no. Once every
+core flow worked, the question that mattered became whether it works *reliably*, and the
+stricter bar found something the looser one had hidden on its very first run: a list
+whose count could only be got by piping to `wc -l`, which counts the header. Failing one
+time in four had been invisible. See `USABILITY-LOG.md`, Run 6.
 
 ---
 
