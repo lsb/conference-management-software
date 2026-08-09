@@ -3,7 +3,13 @@
 Can a small local model operate this app? We measure it rather than assume it.
 
 The bar is **`gemma4:12b-cpu`** — 12 billion parameters, running on CPU, no GPU —
-completing each core task **at least once in three attempts** (pass@3 = 100%).
+completing each core task **at least 3 times out of 5 attempts**.
+
+Runs 1 to 5 below used the looser bar this started with, "at least once in
+three". That asks whether the app is *possible* to use, which was the right
+question while the answer was often no. From Run 6 the bar is majority-of-five,
+which asks whether it works *reliably* — because a flow that succeeds one time
+in three is one a real organizer gets wrong two evenings out of three.
 
 Every failure is treated first as a bug in the app and only then as a limit of
 the model. That rule is the whole value of the exercise: a 12B model failing to

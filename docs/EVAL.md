@@ -2,17 +2,28 @@
 
 ## The bar
 
-`gemma4:12b-cpu` — a 12-billion-parameter model running on CPU, no GPU — must be
-able to complete each core task **at least once in three attempts**. We write that
-as **pass@3 = 100%**: every task passes, where "passes" means at least one of three
-independent attempts succeeded.
+`gemma4:12b-cpu` — a 12-billion-parameter model running on CPU, no GPU — must
+complete each core task **at least 3 times out of 5 attempts**.
 
-Three attempts rather than one because a small model is genuinely stochastic; one
-attempt rather than ten because if it takes ten, the app is too confusing.
+This used to be "at least once in three", and that was the right bar while the
+answer was often no: it asks whether the app is *possible* to use. Once features
+work, the question that matters is whether they work *reliably*. A flow that
+succeeds one time in three is one a real organizer gets wrong two evenings out
+of three, and they will not run it five times to find out whether they were
+unlucky. Majority-of-five is a consistency bar, and it is the one worth holding.
+
+It is deliberately not 5-of-5. A small model on CPU is genuinely stochastic, and
+demanding perfection would mean chasing noise rather than fixing anything.
 
 This is a design constraint, not a benchmark we are chasing. Every failure is
 first treated as a bug in the app — an ambiguous URL, a silent error, an
 undocumented route — and only then as a limitation of the model.
+
+Attempts stop as soon as the outcome cannot change: three passes, or three
+failures. Each attempt costs a minute or more of CPU inference, so a task that
+works reliably costs three attempts and one that is hopeless costs three; only
+genuinely marginal tasks cost all five. Override with `EVAL_ATTEMPTS` and
+`EVAL_REQUIRED` if you want a different shape.
 
 ## Running one question
 
@@ -28,13 +39,15 @@ $ eval/ask-local.sh . "How many .sql files are in src/migrations? Answer with ju
 ```
 
 Environment: `LOCAL_MODEL` (default `gemma4:12b-cpu`), `LOCAL_TIMEOUT` (seconds,
-default 300), `LOCAL_TRACE` (file to capture the tool trace, default discarded).
+default 420), `LOCAL_TRACE` (file to capture the tool trace, default discarded).
 
 ## Running the suite
 
 ```sh
-node eval/run-eval.js              # every task, up to 3 attempts each
+node eval/run-eval.js              # every task
 node eval/run-eval.js <task-id>    # just one
+
+EVAL_ATTEMPTS=3 EVAL_REQUIRED=1 node eval/run-eval.js   # the old, looser bar
 ```
 
 Results are written to `eval/runs/<timestamp>/` and summarised on stdout. Append
@@ -75,9 +88,10 @@ attempt 1 already did the work.
 
 ## Timing
 
-Expect **5–120 seconds per call**, dominated by model load/unload rather than
-prompt size. A tool-using turn costs roughly one extra round trip. Budget ~2
-minutes per attempt, so a 10-task suite at 3 attempts is about an hour.
+Expect **40–330 seconds per attempt**, dominated by model load/unload rather
+than prompt size. At 3-of-5 with early stopping, a healthy 10-task suite costs
+about 30 attempts and runs for roughly an hour; a suite with several marginal
+tasks can reach 50 attempts and take closer to two.
 
 Exactly one inference runs at a time — `ask-local.sh` takes a lock directory and
 refuses to overlap. Two CPU inferences at once make both crawl and make the

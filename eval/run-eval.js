@@ -1,10 +1,20 @@
 // Run the local-model usability suite.
 //
-//   node eval/run-eval.js              every task, up to 3 attempts each
+//   node eval/run-eval.js              every task
 //   node eval/run-eval.js <task-id>    just one
 //
-// A task passes if ANY attempt succeeds (pass@3). Attempts stop as soon as one
-// works, because the metric is "can it do this at all", not "how reliably".
+// A task passes when it succeeds at least 3 times out of 5 attempts.
+//
+// This used to be "any one of three", which answers a different question. That
+// bar asks whether the app is *possible* to use, and it was the right question
+// while the answer was often no. Once a feature works, the question that
+// matters is whether it works *reliably* -- because a flow that succeeds one
+// time in three is one a real organizer will get wrong two evenings out of
+// three, and they will not run it five times to see whether they were unlucky.
+//
+// Attempts stop as soon as the outcome cannot change: three passes, or three
+// failures. Each attempt costs a minute or more of CPU inference, so there is
+// no point buying an answer we already have.
 //
 // See docs/EVAL.md for how to write a task and why the rules are what they are.
 
@@ -16,7 +26,13 @@ import { fileURLToPath } from 'node:url';
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = dirname(EVAL_DIR);
 const TASKS_DIR = join(EVAL_DIR, 'tasks');
-const ATTEMPTS = Number(process.env.EVAL_ATTEMPTS ?? 3);
+const ATTEMPTS = Number(process.env.EVAL_ATTEMPTS ?? 5);
+const REQUIRED = Number(process.env.EVAL_REQUIRED ?? 3);
+
+if (REQUIRED > ATTEMPTS) {
+  console.error(`cannot require ${REQUIRED} passes out of ${ATTEMPTS} attempts`);
+  process.exit(64);
+}
 
 const only = process.argv[2] ?? null;
 
@@ -48,9 +64,15 @@ for (const task of tasks) {
   process.stdout.write(`\n${task}\n  ${prompt.split('\n')[0]}\n`);
 
   const attempts = [];
-  let passed = false;
+  let passes = 0;
+  let failures = 0;
 
-  for (let n = 1; n <= ATTEMPTS && !passed; n++) {
+  for (let n = 1; n <= ATTEMPTS; n++) {
+    // Stop once the verdict cannot change: enough passes to succeed, or enough
+    // failures that the remaining attempts could not reach the bar.
+    if (passes >= REQUIRED) break;
+    if (failures > ATTEMPTS - REQUIRED) break;
+
     // Reset state so attempt N cannot coast on work attempt N-1 already did.
     if (existsSync(setup)) {
       const s = spawnSync('bash', [setup], { cwd: ROOT_DIR, encoding: 'utf8' });
@@ -85,12 +107,17 @@ for (const task of tasks) {
 
     attempts.push({ n, ok, seconds, answer, detail });
     writeFileSync(join(runDir, `${task}.attempt-${n}.answer.txt`), `${answer}\n`);
+
+    if (ok) passes++; else failures++;
     process.stdout.write(`  attempt ${n}: ${ok ? 'PASS' : 'fail'} (${seconds}s)`
-      + `${detail && !ok ? ` - ${detail}` : ''}\n`);
-    if (ok) passed = true;
+      + ` [${passes}/${REQUIRED} needed]${detail && !ok ? ` - ${detail}` : ''}\n`);
   }
 
-  results.push({ task, passed, attempts, prompt });
+  const passed = passes >= REQUIRED;
+  process.stdout.write(`  => ${passed ? 'PASS' : 'FAIL'}: `
+    + `${passes} of ${attempts.length} attempt(s) succeeded, ${REQUIRED} of ${ATTEMPTS} required\n`);
+
+  results.push({ task, passed, passes, attempts, prompt });
 }
 
 const passedCount = results.filter((r) => r.passed).length;
@@ -98,6 +125,7 @@ const summary = {
   startedAt,
   model: process.env.LOCAL_MODEL ?? 'gemma4:12b-cpu',
   attemptsAllowed: ATTEMPTS,
+  passesRequired: REQUIRED,
   passed: passedCount,
   total: results.length,
   results,
@@ -105,7 +133,7 @@ const summary = {
 writeFileSync(join(runDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
 writeFileSync(join(runDir, 'summary.md'), markdown(summary));
 
-console.log(`\npass@${ATTEMPTS}: ${passedCount}/${results.length} tasks`);
+console.log(`\n${REQUIRED}-of-${ATTEMPTS}: ${passedCount}/${results.length} tasks`);
 console.log(`details: ${runDir}`);
 process.exit(passedCount === results.length ? 0 : 1);
 
@@ -113,16 +141,19 @@ function markdown(s) {
   const lines = [
     `### ${s.startedAt} - \`${s.model}\``,
     '',
-    `pass@${s.attemptsAllowed}: **${s.passed}/${s.total}** tasks`,
+    `**${s.passed}/${s.total}** tasks, at ${s.passesRequired} passes out of ${s.attemptsAllowed} attempts`,
     '',
-    '| Task | Result | Attempts | Time |',
-    '| --- | --- | --- | --- |',
+    '| Task | Result | Succeeded | Attempts run | Time |',
+    '| --- | --- | --- | --- | --- |',
   ];
   for (const r of s.results) {
-    const tries = r.attempts.length;
     const total = r.attempts.reduce((a, b) => a + b.seconds, 0);
     lines.push(`| \`${r.task}\` | ${r.passed ? 'pass' : '**FAIL**'} `
-      + `| ${tries}/${s.attemptsAllowed} | ${total}s |`);
+      + `| ${r.passes}/${r.attempts.length} | ${r.attempts.length} | ${total}s |`);
   }
+
+  // Attempts run is reported alongside successes because early stopping makes
+  // the two differ: a task that passes three times straight stops at three, and
+  // one that fails three times stops there too.
   return `${lines.join('\n')}\n`;
 }
