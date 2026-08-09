@@ -25,6 +25,7 @@ import { mountEvaluation } from './routes/evaluation.js';
 import { mountSetup } from './routes/setup.js';
 import { mountFormBuilder } from './routes/formbuilder.js';
 import { mountContent } from './routes/content.js';
+import { mountEmbeds } from './routes/embeds.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -35,6 +36,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountSetup(router);
   mountFormBuilder(router);
   mountContent(router);
+  mountEmbeds(router);
   mountOrganizer(router);
   mountPortal(router);
   mountReviewer(router);

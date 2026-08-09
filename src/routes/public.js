@@ -11,6 +11,7 @@ import { cookieHeader } from '../http/request.js';
 import { scheduledSessions } from '../core/schedule.js';
 import { buildIcs, uidFor, nextSequence } from '../core/ics.js';
 import { readStoredFile, isImage } from '../core/files.js';
+import { renderFeed } from '../core/feeds.js';
 import {
   fieldsOf, isClosed, mappedValues, valueOf, acceptedNames,
   optionResolver, conditionsFor, renderField,
@@ -27,8 +28,15 @@ export function mountPublic(router) {
   router.post('/submit/:event/:form', postCfp,
     'Submit a proposal. Creates the person if new, emails a confirmation, and returns a portal link.');
 
+  // The extension-bearing routes are registered FIRST. A bare `:embed` matches
+  // greedily, so `/embed/x/agenda.json` would otherwise be read as an embed
+  // named "agenda.json" and 404.
+  for (const format of ['json', 'xml', 'ics']) {
+    router.get(`/embed/:event/:embed.${format}`, embedFeed,
+      `An embed feed as ${format.toUpperCase()}.`);
+  }
   router.get('/embed/:event/:embed', embedFeed,
-    'A styled HTML fragment of the agenda or speakers, for embedding in another site.');
+    'An embed feed as styled HTML. Add .json, .xml, or .ics for the same data in another shape.');
 
   router.get('/agenda/:event/:code.ics', sessionIcs,
     'A calendar entry for one published session, for attendees to add to their own calendar.');
@@ -460,44 +468,44 @@ function speakerNames(db, submissionId) {
  * Served as a standalone HTML document with its own styles inlined, so dropping
  * it in an `<iframe>` needs no assets and no script from us.
  */
+/**
+ * An embed, in whichever shape it was configured for.
+ *
+ * The extension in the URL is cosmetic: the embed itself records its format, so
+ * a URL already pasted into somebody's website keeps working when they switch
+ * it from HTML to JSON. The route accepts the extension so the URL looks like
+ * what it returns.
+ */
 function embedFeed(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   const embed = ctx.db.prepare('SELECT * FROM embed WHERE event_id = ? AND slug = ?')
     .get(event.id, ctx.params.embed);
+
   if (!embed) {
     const known = ctx.db.prepare('SELECT slug FROM embed WHERE event_id = ?').all(event.id)
       .map((e) => e.slug);
     throw notFound(`no embed '${ctx.params.embed}'`,
       known.length ? `embeds are: ${known.join(', ')}` : 'this event has no embeds');
   }
-  if (!embed.enabled) throw notFound('this embed is disabled');
+  if (!embed.enabled) {
+    throw notFound('this embed is turned off',
+      'an organizer can re-enable it in the event\'s Embeds screen');
+  }
 
-  const sessions = publishedSessions(ctx.db, event.id)
-    .filter((s) => !embed.filter_track_id || s.track_id === embed.filter_track_id);
+  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : '';
+  const { contentType, body } = renderFeed(ctx.db, event, embed, { baseUrl: base });
 
-  const showsPeople = embed.feed === 'speaker_gallery' || embed.feed === 'speaker_list';
-
-  const body = showsPeople
-    ? html`<div class="grid2">
-        ${uniqueSpeakers(ctx.db, sessions).map((p) => html`
-          <div class="card">
-            <strong>${fullName(p)}</strong>
-            ${p.biography ? html`<p>${p.biography}</p>` : ''}
-          </div>`)}
-      </div>`
-    : html`<table>
-        <tbody>
-          ${sessions.map((s) => html`
-            <tr>
-              <td>${dateOnly(s.starts_at, event.timezone)} ${localTime(s.starts_at, event.timezone)}</td>
-              <td><strong>${s.title}</strong><br><span class="muted">${speakerNames(ctx.db, s.id)}</span></td>
-              <td>${s.room_name ?? ''}</td>
-            </tr>`)}
-        </tbody>
-      </table>`;
-
-  return ok(page({
-    title: embed.name,
-    body: sessions.length === 0 ? empty('Nothing published yet.') : body,
-  }), { headers: { 'cache-control': 'public, max-age=60' } });
+  return {
+    status: 200,
+    headers: {
+      'content-type': contentType,
+      // Embeds are read by other people's websites, so they have to be
+      // fetchable cross-origin, and a minute of caching keeps a busy homepage
+      // from hammering this.
+      'access-control-allow-origin': '*',
+      'cache-control': 'public, max-age=60',
+    },
+    body,
+  };
 }
+
