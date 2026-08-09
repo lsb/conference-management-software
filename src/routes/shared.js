@@ -94,7 +94,8 @@ export function organizerNav(event, current) {
           `)}
         </nav>
         <span class="spacer"></span>
-        <span class="who"><a href="/agenda/${event.slug}">Public agenda</a></span>
+        <span class="who"><a href="/crm">Speaker database</a>
+          &middot; <a href="/agenda/${event.slug}">Public agenda</a></span>
       </div>
     </header>
   `;

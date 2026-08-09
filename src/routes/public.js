@@ -126,7 +126,9 @@ function home(ctx) {
     title: 'Conference management',
     body: html`
       <h1>Conference management</h1>
-      <p class="sub">Running locally. <a href="/llms.txt">What this app serves</a>.</p>
+      <p class="sub">Running locally.
+        <a href="/crm">Speaker database</a> &middot;
+        <a href="/llms.txt">What this app serves</a>.</p>
 
       ${events.length === 0 ? empty('No events yet. Run `npm run seed` for a demo conference.') : html`
         <table>

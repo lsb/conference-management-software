@@ -13,6 +13,7 @@ import { findConflicts, scheduledSessions, unscheduledSessions, localTime, local
 import { createMagicLink } from './core/auth.js';
 import { queueEmail } from './core/mail.js';
 import { audienceSizes, resolveAudience } from './core/audience.js';
+import { searchPeople, personHistory, notesOn, tagsOn } from './core/crm.js';
 import { STATUSES } from './core/submissions.js';
 
 const USAGE = `conf - run a conference from the command line
@@ -46,6 +47,11 @@ Usage:
   conf outbox <event> [--limit N]        messages this app has generated
 
   conf portal-link <event> <person-slug> a one-time sign-in link for a speaker
+
+  conf people [--q text] [--tag T]       the speaker database, across every event
+              [--event SLUG]             who spoke at one particular event
+              [--never-spoken]           people we know but have never had on stage
+  conf person <person-slug>              one person's whole history, notes, and tags
 
 Options:
   --status <s>   pending | accept_queue | decline_queue | accepted | declined | withdrawn | draft
@@ -82,6 +88,8 @@ const GLOBAL_FLAGS = ['json', 'db', 'help'];
 const COMMAND_FLAGS = {
   events: [],
   status: [],
+  people: ['q', 'tag', 'company', 'event', 'never-spoken'],
+  person: [],
   submissions: ['status', 'q'],
   sessions: ['q'],
   show: [],
@@ -401,6 +409,87 @@ const COMMANDS = {
     return output(args, rows,
       args.q ? `Nothing published matches '${args.q}'.` : 'Nothing is published yet.',
       'published session');
+  },
+
+  /**
+   * The speaker database, which spans events rather than belonging to one.
+   *
+   * Takes no event argument on purpose: "who do we know that we have never
+   * invited" is a question a per-event list cannot answer, and that is the
+   * whole reason this exists.
+   */
+  people(db, args) {
+    const event = args.event
+      ? db.prepare('SELECT id FROM event WHERE slug = ?').get(args.event)
+      : null;
+    if (args.event && !event) {
+      const known = db.prepare('SELECT slug FROM event').all().map((e) => e.slug);
+      throw withHint(new Error(`no event '${args.event}'`), `events are: ${known.join(', ')}`);
+    }
+
+    const rows = searchPeople(db, {
+      query: args.q ?? '',
+      tag: args.tag ?? '',
+      company: args.company ?? '',
+      spokeAtEventId: event?.id ?? null,
+      neverSpoken: Boolean(args['never-spoken']),
+    }).map((p) => ({
+      person: p.slug,
+      name: `${p.first_name} ${p.last_name}`.trim(),
+      company: p.company,
+      spoke_at: p.events_spoken,
+      submissions: p.submissions,
+      tags: p.tags ?? '',
+    }));
+
+    return output(args, rows, 'Nobody matches.', 'person');
+  },
+
+  /** Everything we know about one human, across every event. */
+  person(db, args) {
+    const slug = args._[1];
+    if (!slug) {
+      throw withHint(new Error('which person?'),
+        'conf person <person-slug>, and list them with `conf people`');
+    }
+    const person = db.prepare('SELECT * FROM person WHERE slug = ?').get(slug);
+    if (!person) {
+      throw withHint(new Error(`no person '${slug}'`), 'list them with `conf people`');
+    }
+
+    const history = personHistory(db, person.id);
+    const notes = notesOn(db, person.id);
+    const tags = tagsOn(db, person.id);
+
+    if (args.json) {
+      return output(args, {
+        person: person.slug,
+        name: `${person.first_name} ${person.last_name}`.trim(),
+        email: person.email,
+        job_title: person.job_title,
+        company: person.company,
+        tags,
+        history: history.map((h) => ({ event: h.event_slug, code: h.code, title: h.title, status: h.status })),
+        notes: notes.map((n) => n.body),
+      });
+    }
+
+    console.log(`${person.first_name} ${person.last_name}  <${person.email}>`);
+    if (person.job_title || person.company) {
+      console.log([person.job_title, person.company].filter(Boolean).join(', '));
+    }
+    if (tags.length > 0) console.log(`tags: ${tags.join(', ')}`);
+
+    const spokenAt = new Set(history.filter((h) => h.status === 'accepted').map((h) => h.event_slug));
+    console.log(`\nspoke at ${spokenAt.size} event(s), ${history.length} submission(s) in total`);
+    for (const h of history) {
+      console.log(`  ${h.event_slug.padEnd(18)} ${h.code.padEnd(8)} ${h.status.padEnd(14)} ${h.title}`);
+    }
+    if (notes.length > 0) {
+      console.log('\nnotes:');
+      for (const n of notes) console.log(`  ${n.created_at}  ${n.body}`);
+    }
+    return 0;
   },
 
   /** Who is behind on reviewing, which is the only reason to look. */

@@ -26,6 +26,7 @@ import { mountSetup } from './routes/setup.js';
 import { mountFormBuilder } from './routes/formbuilder.js';
 import { mountContent } from './routes/content.js';
 import { mountEmbeds } from './routes/embeds.js';
+import { mountCrm } from './routes/crm.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -37,6 +38,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountFormBuilder(router);
   mountContent(router);
   mountEmbeds(router);
+  mountCrm(router);
   mountOrganizer(router);
   mountPortal(router);
   mountReviewer(router);
@@ -233,6 +235,7 @@ function groupOf(pattern) {
   if (pattern.startsWith('/api/')) return 'JSON API';
   if (pattern.startsWith('/portal')) return 'Speaker portal';
   if (pattern.startsWith('/review')) return 'Reviewer';
+  if (pattern.startsWith('/crm')) return 'Speaker database (across events)';
   if (pattern.startsWith('/submit')) return 'Public call for speakers';
   if (pattern.startsWith('/e/')) return 'Organizer';
   return 'General';
