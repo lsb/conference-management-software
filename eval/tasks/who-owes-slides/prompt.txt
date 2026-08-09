@@ -1,0 +1,1 @@
+This directory contains a conference management app. The AV team for Manzanita 2026 is chasing slide decks. Which speakers have not sent theirs in yet? List their names.

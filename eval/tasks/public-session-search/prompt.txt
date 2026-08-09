@@ -1,0 +1,1 @@
+This directory contains a conference management app. An attendee has written in about Manzanita 2026: they are interested in retrieval and want to know which sessions they can go to, and who is giving them. What should we tell them?

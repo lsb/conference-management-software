@@ -47,10 +47,50 @@ emails people and makes the decision final. If you are asked to accept
 something, use `accept`. If you are asked to accept it *and tell the speaker*,
 use `accept` and then `notify`.
 
+**`notify <event>` with no session codes sends every queued decision**, to
+everyone, at once and irreversibly. Name the codes you mean. There is no dry
+run for `notify`, and an unrecognised flag is ignored rather than refused, so
+`conf notify <event> --dry-run` sends for real. Preview with
+`conf pending <event>` first.
+
 ## There is also an HTTP server
 
 `npm start` serves on `http://127.0.0.1:8080`. Every page has a JSON twin under
 `/api`. `curl http://127.0.0.1:8080/llms.txt` lists every route with examples.
+
+Check whether it is already up before starting one. `npm start` against a taken
+port dies with a raw `EADDRINUSE` stack trace, which reads like a broken app and
+is not:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/healthz   # 200 = already running
+```
+
+## Three questions the command line cannot answer
+
+`bin/conf` has no command for any of these. Use the server.
+
+```sh
+# What an attendee can actually attend, with the speakers' names attached.
+# `conf agenda` gives times and titles but no speakers, and `conf submissions
+# --q` also matches drafts and declined proposals that are not on the schedule.
+curl -s 'http://127.0.0.1:8080/sessions/manzanita-2026?q=retrieval'
+
+# Who to chase about reviewing: submitted vs still-to-do, per reviewer.
+curl -s http://127.0.0.1:8080/e/manzanita-2026/review
+
+# Bulk email to a named audience, with its exact size and recipient list.
+# Audiences: accepted-speakers, pending-submitters, declined-submitters,
+# outstanding-tasks, draft-submitters, all-submitters.
+curl -s 'http://127.0.0.1:8080/e/manzanita-2026/mail?audience=outstanding-tasks'
+curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/mail \
+     --data-urlencode 'audience=outstanding-tasks' \
+     --data-urlencode 'subject=...' --data-urlencode 'body=...'
+```
+
+`conf tasks` prints one row per task, so seven people owing three things each is
+twenty rows. To count *people*, read the audience size above rather than
+de-duplicating that table by eye.
 
 ## Files worth reading, and one to skip
 

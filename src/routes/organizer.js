@@ -100,6 +100,21 @@ function dashboard(ctx) {
     alerts.push({ level: '', text: `${unscheduled.length} session${unscheduled.length === 1 ? '' : 's'} still need a time slot`,
       href: `/e/${event.slug}/agenda?view=list`, action: 'Schedule them' });
   }
+  // Publishing and approving are separate on purpose, which means it is
+  // possible to tick "show this publicly" on a session whose content nobody has
+  // approved and have precisely nothing happen. Say so, rather than letting an
+  // organizer discover it from an empty website.
+  const invisible = ctx.db.prepare(
+    `SELECT count(*) AS n FROM submission
+      WHERE event_id = ? AND status = 'accepted' AND published = 1 AND content_status != 'approved'`,
+  ).get(event.id).n;
+  if (invisible > 0) {
+    alerts.push({ level: 'stop',
+      text: `${invisible} session${invisible === 1 ? ' is' : 's are'} marked public but not approved, `
+        + `so ${invisible === 1 ? 'it does' : 'they do'} not appear on the agenda`,
+      href: `/e/${event.slug}/submissions?status=accepted`, action: 'Approve them' });
+  }
+
   const errors = conflicts.filter((c) => c.severity === 'error');
   if (errors.length > 0) {
     alerts.push({ level: 'stop', text: `${errors.length} scheduling conflict${errors.length === 1 ? '' : 's'}`,

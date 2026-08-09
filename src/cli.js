@@ -11,6 +11,9 @@ import { decide, notify, awaitingNotification, participantsOf } from './core/sub
 import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
 import { findConflicts, scheduledSessions, unscheduledSessions, localTime, localDay } from './core/schedule.js';
 import { createMagicLink } from './core/auth.js';
+import { queueEmail } from './core/mail.js';
+import { audienceSizes, resolveAudience } from './core/audience.js';
+import { STATUSES } from './core/submissions.js';
 
 const USAGE = `conf - run a conference from the command line
 
@@ -23,14 +26,25 @@ Usage:
   conf decline <event> <CODE>...         record a decline (sends nothing)
   conf undecide <event> <CODE>...        move back to pending
   conf pending <event>                   decided but not yet told
-  conf notify <event> [CODE]...          email the speakers; no codes means all pending
-  conf agenda <event>                    the schedule
+  conf notify <event> <CODE>...          email those speakers their decision
+              [--all] [--dry-run]        --all means every queued decision
+
+  conf sessions <event> [--q text]       what the public can actually attend
+  conf agenda <event>                    the schedule, with speakers
   conf conflicts <event>                 clashes in the schedule
   conf speakers <event>                  accepted speakers and what they owe
+  conf reviews <event>                   per reviewer: submitted and still to do
+
   conf tasks <event> [--task SLUG]       outstanding speaker tasks
-                     [--person SLUG]     e.g. --task headshot to see who owes a headshot
-  conf remind <event> [--dry-run]        queue reminder emails
+                     [--person SLUG]     e.g. --task headshot to see who owes one
+  conf remind <event> [--dry-run]        chase overdue tasks
+
+  conf audiences <event>                 named groups a message can go to
+  conf mail <event> --audience KEY       one message to a group
+              [--task SLUG] [--dry-run]
+              --subject "..." --body "..."
   conf outbox <event> [--limit N]        messages this app has generated
+
   conf portal-link <event> <person-slug> a one-time sign-in link for a speaker
 
 Options:
@@ -39,10 +53,54 @@ Options:
   --json         machine-readable output
   --db <path>    a different database file (default: data/conference.db)
 
-Recording a decision and telling the speaker are separate steps on purpose.
-'accept' moves a submission into a queue and sends nothing; 'notify' is what
-actually emails people and finalises the status.
+An unrecognised flag is an error, not something to ignore.
+
+Two things that look similar and are not:
+
+  'notify' announces a decision -- accepted or rejected -- and is irreversible.
+  It refuses to run without either explicit codes or --all.
+
+  'mail' sends an ordinary message to a named group. That is what you want for
+  a deadline change or a reminder about paperwork. Start with 'conf audiences'.
+
+Recording a decision and telling the speaker are also separate on purpose:
+'accept' moves a submission into a queue and sends nothing.
 `;
+
+/** Flags every command accepts. */
+const GLOBAL_FLAGS = ['json', 'db', 'help'];
+
+/**
+ * Flags each command accepts, and nothing else.
+ *
+ * An unrecognised flag is refused rather than ignored. This is not pedantry: a
+ * local model once typed `conf notify <event> ---dry-run` -- three dashes -- and
+ * the flag was silently dropped, so a command it believed was a preview sent
+ * every queued acceptance and rejection for real. A flag you cannot see is worse
+ * than no flag at all.
+ */
+const COMMAND_FLAGS = {
+  events: [],
+  status: [],
+  submissions: ['status', 'q'],
+  sessions: ['q'],
+  show: [],
+  accept: [],
+  decline: [],
+  undecide: [],
+  pending: [],
+  notify: ['dry-run', 'all'],
+  agenda: [],
+  conflicts: [],
+  speakers: [],
+  reviews: [],
+  tasks: ['task', 'person'],
+  remind: ['dry-run'],
+  mail: ['audience', 'task', 'subject', 'body', 'dry-run'],
+  audiences: [],
+  outbox: ['limit'],
+  'portal-link': [],
+};
 
 export function run(argv) {
   const args = parseArgs(argv);
@@ -53,12 +111,24 @@ export function run(argv) {
     return 0;
   }
 
-  const db = openDatabase(args.db ?? DEFAULT_DB_PATH);
   const handler = COMMANDS[command];
   if (!handler) {
     fail(`unknown command '${command}'`, `run 'conf --help' for the list`);
     return 64;
   }
+
+  const allowed = new Set([...GLOBAL_FLAGS, ...(COMMAND_FLAGS[command] ?? [])]);
+  const unknown = Object.keys(args).filter((k) => k !== '_' && !allowed.has(k));
+  if (unknown.length > 0) {
+    const accepted = (COMMAND_FLAGS[command] ?? []).map((f) => `--${f}`);
+    fail(`'${command}' does not take ${unknown.map((f) => `--${f}`).join(', ')}`,
+      accepted.length
+        ? `it accepts ${accepted.join(', ')}, plus --json and --db`
+        : 'it takes no flags beyond --json and --db');
+    return 64;
+  }
+
+  const db = openDatabase(args.db ?? DEFAULT_DB_PATH);
 
   try {
     return handler(db, args) ?? 0;
@@ -114,7 +184,17 @@ const COMMANDS = {
     const where = ['s.event_id = ?'];
     const params = [event.id];
 
-    if (args.status) { where.push('s.status = ?'); params.push(args.status); }
+    if (args.status) {
+      // Validated, and the real vocabulary named. An invented filter used to
+      // come back as a confident empty list, which reads exactly like "there
+      // are none" and is how a wrong answer gets believed.
+      if (!STATUSES.includes(args.status)) {
+        throw withHint(new Error(`'${args.status}' is not a submission status`),
+          `use one of: ${STATUSES.join(', ')}`);
+      }
+      where.push('s.status = ?');
+      params.push(args.status);
+    }
     if (args.q) { where.push('(s.title LIKE ? OR s.description LIKE ?)'); params.push(`%${args.q}%`, `%${args.q}%`); }
 
     const rows = db.prepare(
@@ -172,12 +252,42 @@ const COMMANDS = {
   notify(db, args) {
     const event = requireEvent(db, args._[1]);
     const codes = args._.slice(2);
+    const queued = awaitingNotification(db, event.id);
+
+    // Refusing to default to "everyone" is the point. This command sends
+    // irreversible acceptances and rejections, and the person running it should
+    // have had to name who, or say --all out loud.
+    if (codes.length === 0 && !args.all) {
+      if (queued.length === 0) {
+        console.log('Nothing is waiting to be sent.');
+        return 0;
+      }
+      fail(`this would email ${queued.length} decision(s), and you did not say which`,
+        `name the codes (conf notify ${event.slug} ${queued.slice(0, 2).map((s) => s.code).join(' ')}), `
+        + `or pass --all. Add --dry-run to see it first.`);
+      return 64;
+    }
+
     const targets = codes.length > 0
       ? codes.map((code) => requireSubmission(db, event, code))
-      : awaitingNotification(db, event.id);
+      : queued;
 
     if (targets.length === 0) {
       console.log('Nothing is waiting to be sent.');
+      return 0;
+    }
+
+    if (args['dry-run']) {
+      const preview = targets.map((s) => ({
+        code: s.code,
+        decision: s.status === 'accept_queue' ? 'accept' : s.status === 'decline_queue' ? 'decline' : '-',
+        recipients: participantsOf(db, s.id).map((p) => p.email).join(', ') || '(nobody attached)',
+        title: s.title,
+      }));
+      if (args.json) return output(args, { dry_run: true, would_send: preview });
+
+      output(args, preview, 'Nothing would be sent.');
+      console.log(`\n${preview.length} email(s) would be sent. Nothing has been sent.`);
       return 0;
     }
 
@@ -201,12 +311,18 @@ const COMMANDS = {
 
   agenda(db, args) {
     const event = requireEvent(db, args._[1]);
+    const speakersOf = db.prepare(
+      `SELECT group_concat(p.first_name || ' ' || p.last_name, ', ') AS names
+         FROM submission_participant sp JOIN person p ON p.id = sp.person_id
+        WHERE sp.submission_id = ?`,
+    );
     const rows = scheduledSessions(db, event.id).map((s) => ({
       code: s.code,
       day: localDay(s.starts_at, event.timezone),
       time: `${localTime(s.starts_at, event.timezone)}-${localTime(s.ends_at, event.timezone)}`,
       room: s.room_name ?? '',
       title: s.title,
+      speakers: speakersOf.get(s.id).names ?? '',
     }));
 
     if (args.json) {
@@ -241,6 +357,7 @@ const COMMANDS = {
     const event = requireEvent(db, args._[1]);
     const rows = db.prepare(
       `SELECT p.slug, p.first_name || ' ' || p.last_name AS name, p.email,
+              p.job_title, p.company,
               group_concat(DISTINCT s.code) AS sessions,
               (p.biography != '') AS bio,
               (SELECT count(*) FROM task_instance ti JOIN task_definition td ON td.id = ti.definition_id
@@ -252,6 +369,131 @@ const COMMANDS = {
         GROUP BY p.id ORDER BY p.last_name, p.first_name`,
     ).all(event.id, event.id);
     return output(args, rows, 'Nobody has been accepted yet.');
+  },
+
+  /**
+   * What the public can actually attend.
+   *
+   * Distinct from `submissions`, which searches everything including drafts and
+   * declined proposals. Answering an attendee from that list tells them about a
+   * talk that is not happening.
+   */
+  sessions(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const rows = db.prepare(
+      `SELECT s.code,
+              date(s.starts_at) AS day,
+              s.title,
+              r.name AS room,
+              t.name AS track,
+              (SELECT group_concat(p.first_name || ' ' || p.last_name, ', ')
+                 FROM submission_participant sp JOIN person p ON p.id = sp.person_id
+                WHERE sp.submission_id = s.id) AS speakers
+         FROM submission s
+         LEFT JOIN room r ON r.id = s.room_id
+         LEFT JOIN track t ON t.id = s.track_id
+        WHERE s.event_id = ? AND s.status = 'accepted'
+          AND s.published = 1 AND s.content_status = 'approved'
+          AND (? IS NULL OR s.title LIKE '%' || ? || '%' OR s.description LIKE '%' || ? || '%')
+        ORDER BY s.starts_at IS NULL, s.starts_at, s.code`,
+    ).all(event.id, args.q ?? null, args.q ?? null, args.q ?? null);
+
+    return output(args, rows,
+      args.q ? `Nothing published matches '${args.q}'.` : 'Nothing is published yet.');
+  },
+
+  /** Who is behind on reviewing, which is the only reason to look. */
+  reviews(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const rows = db.prepare(
+      `SELECT p.first_name || ' ' || p.last_name AS reviewer,
+              p.email,
+              ep.name AS round,
+              sum(rv.status = 'submitted') AS submitted,
+              sum(rv.status IN ('assigned', 'in_progress')) AS outstanding,
+              sum(rv.status = 'declined') AS declined
+         FROM review rv
+         JOIN person p ON p.id = rv.reviewer_person_id
+         JOIN evaluation_plan ep ON ep.id = rv.plan_id
+        WHERE ep.event_id = ?
+        GROUP BY p.id, ep.id
+        ORDER BY outstanding DESC, p.last_name`,
+    ).all(event.id);
+
+    return output(args, rows, 'Nobody has been assigned any reviews yet.');
+  },
+
+  /** The named groups a bulk message can go to, and how many people each is. */
+  audiences(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const rows = audienceSizes(db, event.id).map((a) => ({
+      audience: a.key, people: a.count, description: a.description,
+    }));
+    return output(args, rows, 'No audiences.');
+  },
+
+  /**
+   * Send one message to a named group.
+   *
+   * Separate from `notify`, which announces decisions. Conflating them is how a
+   * request to email everyone who owes paperwork turns into an announcement
+   * that four people's talks were accepted or rejected.
+   */
+  mail(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const key = args.audience;
+
+    if (!key) {
+      throw withHint(new Error('which audience?'),
+        `conf mail ${event.slug} --audience <key> --subject "..." --body "..."`
+        + `\n      see them with: conf audiences ${event.slug}`);
+    }
+
+    let recipients;
+    try {
+      recipients = resolveAudience(db, event.id, key, { taskSlug: args.task ?? null });
+    } catch (err) {
+      throw withHint(err, err.hint ?? `see them with: conf audiences ${event.slug}`);
+    }
+
+    if (recipients.length === 0) {
+      console.log(`Nobody is in '${key}' right now, so nothing would be sent.`);
+      return 0;
+    }
+
+    if (args['dry-run']) {
+      const rows = recipients.map((p) => ({ name: fullNameOf(p), email: p.email }));
+      if (args.json) return output(args, { dry_run: true, audience: key, recipients: rows });
+      output(args, rows);
+      console.log(`\n${rows.length} message(s) would be sent to '${key}'. Nothing has been sent.`);
+      return 0;
+    }
+
+    const subject = args.subject;
+    const body = args.body;
+    if (!subject || !body) {
+      throw withHint(new Error('a message needs a subject and a body'),
+        `add --subject "..." --body "...", or use --dry-run to just see the ${recipients.length} recipients`);
+    }
+
+    for (const person of recipients) {
+      queueEmail(db, {
+        eventId: event.id,
+        to: person,
+        subject,
+        body,
+        kind: 'bulk',
+        vars: {
+          event_name: event.name,
+          portal_url: `http://127.0.0.1:8080/portal/${event.slug}/enter`
+            + `?token=${createMagicLink(db, person.id, event.id)}`,
+        },
+      });
+    }
+
+    if (args.json) return output(args, { audience: key, sent: recipients.length });
+    console.log(`Queued ${recipients.length} message(s) to '${key}'. They are in the outbox.`);
+    return 0;
   },
 
   tasks(db, args) {
@@ -303,7 +545,17 @@ const COMMANDS = {
     if (args.json) return output(args, { dry_run: dryRun, reminders: queued });
 
     if (queued.length === 0) {
-      console.log('No reminders are due.');
+      const next = db.prepare(
+        `SELECT min(td.due_at) AS due FROM task_instance ti
+           JOIN task_definition td ON td.id = ti.definition_id
+          WHERE td.event_id = ? AND ti.status = 'todo' AND td.due_at IS NOT NULL`,
+      ).get(event.id).due;
+
+      console.log(next
+        ? `No reminders are due. The earliest outstanding deadline is ${next.slice(0, 10)}, `
+          + 'and speakers are reminded a week before it.'
+        : 'No reminders are due. Nothing outstanding has a deadline.');
+      console.log(`To send something else, use: conf mail ${event.slug} --audience outstanding-tasks`);
       return 0;
     }
     for (const q of queued) console.log(`${q.email.padEnd(30)} ${q.task}  (${q.rule})`);
@@ -382,6 +634,10 @@ function requireSubmission(db, event, code) {
       `list them with \`conf submissions ${event.slug}\``);
   }
   return submission;
+}
+
+function fullNameOf(person) {
+  return `${person.first_name ?? ''} ${person.last_name ?? ''}`.trim() || person.email;
 }
 
 function withHint(err, hint) {

@@ -1,0 +1,1 @@
+This directory contains a conference management app. For Manzanita 2026 we are thinking of sending one email to everybody who still owes us something. How many people would that message reach? Reply with just the number.

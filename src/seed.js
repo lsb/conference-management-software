@@ -476,15 +476,17 @@ try {
 
   at('2025-08-19T20:00:00Z', () => {
     db.prepare(
-      `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1, updated_at = ?
+      `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1,
+                            content_status = 'approved', content_approved_at = ?, updated_at = ?
         WHERE id = ?`,
     ).run(was.mainHall.id, pdt('2025-10-06', '10:00'), pdt('2025-10-06', '10:45'),
-      now(), pastSubs.incident.id);
+      now(), now(), pastSubs.incident.id);
     db.prepare(
-      `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1, updated_at = ?
+      `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1,
+                            content_status = 'approved', content_approved_at = ?, updated_at = ?
         WHERE id = ?`,
     ).run(was.sideRoom.id, pdt('2025-10-07', '14:00'), pdt('2025-10-07', '14:45'),
-      now(), pastSubs.ranking.id);
+      now(), now(), pastSubs.ranking.id);
   });
 
   // -------------------------------------------------------------------------
@@ -1279,9 +1281,10 @@ We would genuinely welcome a submission from you next year.
   at('2026-08-06T18:00:00Z', () => {
     const place = (key, roomKey, day, from, to) => {
       db.prepare(
-        `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1, updated_at = ?
+        `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = 1,
+                            content_status = 'approved', content_approved_at = ?, updated_at = ?
           WHERE id = ?`,
-      ).run(room[roomKey].id, pdt(day, from), pdt(day, to), now(), sub[key].id);
+      ).run(room[roomKey].id, pdt(day, from), pdt(day, to), now(), now(), sub[key].id);
       logActivity(db, {
         eventId: event.id, actorPersonId: p.marcus.id, subjectType: 'submission',
         subjectId: sub[key].id, verb: 'scheduled',
