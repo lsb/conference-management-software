@@ -238,3 +238,89 @@ test('two forms can run at once with different deadlines', async () => {
   assert.match((await get(app, `/submit/${slug}/cfp-2027-main-round`)).body, /Your proposal/);
   assert.match((await get(app, `/submit/${slug}/${second}`)).body, /closed/i);
 });
+
+// --- conditional questions -------------------------------------------------
+
+/** A form whose "Workshop prerequisites" is required, but only for workshops. */
+async function formWithCondition(app) {
+  const { slug, form } = await eventWithForm(app);
+  await post(app, `/e/${slug}/forms/${form}/fields`, {
+    label: 'Workshop prerequisites', field_type: 'textarea', section: 'abstract', required: '1',
+  });
+  await post(app, `/e/${slug}/forms/${form}/conditions`, {
+    field_id: 'workshop-prerequisites', when_field_id: 'track',
+    operator: 'equals', value: 'ai-engineering',
+  });
+  return { slug, form };
+}
+
+const BASE_ANSWERS = {
+  title: 'A talk', description: 'About things.', format: 'talk-30-min',
+  'first-name': 'Priya', 'last-name': 'Raman', email: 'priya@example.com',
+  biography: 'Engineer.',
+};
+
+test('a required question that was not asked is not missing', async () => {
+  // Demanding workshop prerequisites from a talk would refuse a submission over
+  // a question nobody put.
+  const app = newApp();
+  const { slug, form } = await formWithCondition(app);
+
+  const response = await post(app, `/submit/${slug}/${form}`,
+    { ...BASE_ANSWERS, track: 'platform-and-infra' });
+  assert.ok(response.status === 303 || response.status === 200, `got ${response.status}`);
+  assert.equal(app.db.prepare("SELECT count(*) AS n FROM submission WHERE title = 'A talk'").get().n, 1);
+});
+
+test('the same question IS required once its condition holds', async () => {
+  const app = newApp();
+  const { slug, form } = await formWithCondition(app);
+
+  const err = await failure(post(app, `/submit/${slug}/${form}`,
+    { ...BASE_ANSWERS, track: 'ai-engineering' }));
+  assert.match(err.message, /missing required field: Workshop prerequisites/);
+});
+
+test('answering the conditional question satisfies it', async () => {
+  const app = newApp();
+  const { slug, form } = await formWithCondition(app);
+
+  const response = await post(app, `/submit/${slug}/${form}`, {
+    ...BASE_ANSWERS, track: 'ai-engineering',
+    'workshop-prerequisites': 'Bring a laptop.',
+  });
+  assert.ok(response.status === 303 || response.status === 200);
+
+  const answer = app.db.prepare(
+    `SELECT sa.value FROM submission_answer sa JOIN form_field ff ON ff.id = sa.field_id
+      WHERE ff.slug = 'workshop-prerequisites'`,
+  ).get();
+  assert.equal(answer.value, 'Bring a laptop.');
+});
+
+test('the public form marks the conditional field and ships the enhancement', async () => {
+  const app = newApp();
+  const { slug, form } = await formWithCondition(app);
+  const body = (await get(app, `/submit/${slug}/${form}`)).body;
+
+  assert.match(body, /data-show-when="track:equals:ai-engineering"/);
+  assert.match(body, /<script>/, 'the enhancement is included when there is something to enhance');
+});
+
+test('a form with no conditions ships no script at all', async () => {
+  const app = newApp();
+  const { slug, form } = await eventWithForm(app);
+  assert.doesNotMatch((await get(app, `/submit/${slug}/${form}`)).body, /<script>/);
+});
+
+test('a draft still skips required questions whose condition does hold', async () => {
+  const app = newApp();
+  const { slug, form } = await formWithCondition(app);
+
+  const response = await post(app, `/submit/${slug}/${form}`, {
+    title: 'Half an idea', email: 'later@example.com', save_draft: '1', track: 'ai-engineering',
+  });
+  assert.ok(response.status === 303 || response.status === 200, `got ${response.status}`);
+  assert.equal(app.db.prepare("SELECT status FROM submission WHERE title = 'Half an idea'").get().status,
+    'draft');
+});

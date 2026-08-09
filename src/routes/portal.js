@@ -15,7 +15,7 @@ import { storeVersion } from '../core/content.js';
 import { setStatus, logActivity } from '../core/submissions.js';
 import {
   fieldsOf, isClosed, optionResolver, conditionsFor, renderField,
-  answersFor, personValues, validateAnswers, applyAnswers,
+  answersFor, personValues, validateAnswers, applyAnswers, CONDITIONAL_FIELD_SCRIPT,
 } from './formfields.js';
 import { findEvent, statusPill, empty, dateOnly, when, fullName } from './shared.js';
 
@@ -330,6 +330,7 @@ function editSubmission(ctx) {
   return ok(page({
     title: `${submission.code} - ${submission.title}`,
     nav: nav(event, 'Submissions', person),
+    script: conditions.length > 0 ? CONDITIONAL_FIELD_SCRIPT : null,
     body: html`
       <p class="sub"><a href="/portal/${event.slug}/submissions">&larr; Your submissions</a></p>
       <h1>${submission.title || 'Untitled draft'}</h1>
@@ -389,7 +390,10 @@ function postEditSubmission(ctx) {
   const stayingDraft = submission.status === 'draft' && !sendingNow;
 
   // A draft is allowed to be incomplete. Anything heading for review is not.
-  validateAnswers(ctx.fields, all, { requireRequired: !stayingDraft });
+  validateAnswers(ctx.fields, all, {
+    requireRequired: !stayingDraft,
+    conditions: conditionsFor(ctx.db, form.id),
+  });
 
   applyAnswers(ctx.db, {
     submission, person, eventId: event.id, fields: ctx.fields, formFields: all,

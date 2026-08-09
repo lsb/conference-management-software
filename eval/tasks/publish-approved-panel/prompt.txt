@@ -1,0 +1,1 @@
+This directory contains a conference management app. The programme committee has signed off the wording of the hiring panel, SESS-6, at Manzanita 2026. It already has a room and a time, but attendees still cannot find it anywhere on the public agenda. Put that right.

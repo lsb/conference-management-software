@@ -8,6 +8,74 @@ import { html, raw } from '../http/html.js';
 import { badRequest } from '../http/router.js';
 import { now } from '../db.js';
 
+/**
+ * Progressive enhancement for conditional questions.
+ *
+ * The server already emits `data-show-when="slug:operator:value"` on any field
+ * that has conditions, and already re-checks those conditions on submit. This
+ * makes them appear and disappear as somebody answers, which is what the field
+ * is for -- asking about workshop prerequisites is only sensible once they have
+ * said "workshop".
+ *
+ * It is an enhancement, not a requirement. With scripting off every question is
+ * shown, every answer is accepted, and the server decides what was relevant.
+ * That is a slightly noisier form, not a broken one, which is the trade this
+ * codebase takes everywhere else too.
+ *
+ * The one non-obvious part is `required`. A hidden field that is still marked
+ * required makes a browser refuse to submit while pointing at something nobody
+ * can see, so the attribute is taken off while hidden and put back when shown.
+ */
+export const CONDITIONAL_FIELD_SCRIPT = `
+(function () {
+  var groups = Array.prototype.slice.call(document.querySelectorAll('[data-show-when]'));
+  if (!groups.length) return;
+
+  function valueOf(name) {
+    var els = document.getElementsByName(name);
+    if (!els.length) return '';
+    var el = els[0];
+    if (el.type === 'checkbox') return el.checked ? '1' : '';
+    if (el.multiple) {
+      return Array.prototype.filter.call(el.options, function (o) { return o.selected; })
+        .map(function (o) { return o.value; }).join(',');
+    }
+    return el.value;
+  }
+
+  function holds(rule) {
+    var parts = rule.split(':');
+    var actual = valueOf(parts[0]);
+    var op = parts[1];
+    var want = parts.slice(2).join(':');
+    if (op === 'equals') return actual === want;
+    if (op === 'not_equals') return actual !== want;
+    if (op === 'includes') return actual.split(',').indexOf(want) !== -1;
+    if (op === 'is_blank') return actual === '';
+    if (op === 'is_present') return actual !== '';
+    return true;
+  }
+
+  function apply() {
+    groups.forEach(function (group) {
+      var show = group.getAttribute('data-show-when').split('|').every(holds);
+      group.hidden = !show;
+
+      // A hidden field that is still required makes the browser refuse to
+      // submit while pointing at something nobody can see.
+      Array.prototype.forEach.call(group.querySelectorAll('input, select, textarea'), function (el) {
+        if (!show && el.required) { el.dataset.wasRequired = '1'; el.required = false; }
+        else if (show && el.dataset.wasRequired) { el.required = true; delete el.dataset.wasRequired; }
+      });
+    });
+  }
+
+  document.addEventListener('change', apply);
+  document.addEventListener('input', apply);
+  apply();
+})();
+`.trim();
+
 export function fieldsOf(db, formId, section) {
   return db.prepare(
     'SELECT * FROM form_field WHERE form_id = ? AND section = ? ORDER BY sort_order, id',
@@ -53,10 +121,24 @@ export function mappedValues(fields, formFields) {
  * `requireRequired` is false when saving a draft: a draft exists precisely so
  * somebody can write the title now and the abstract on Sunday.
  */
-export function validateAnswers(fields, formFields, { requireRequired = true } = {}) {
+export function validateAnswers(fields, formFields, {
+  requireRequired = true, conditions = [],
+} = {}) {
+  const answerOf = (slug) => {
+    const field = formFields.find((f) => f.slug === slug);
+    return field ? valueOf(fields, field) : '';
+  };
+
   for (const field of formFields) {
     const value = valueOf(fields, field);
-    if (requireRequired && field.required && value === '') {
+
+    // A required question that was not asked cannot be missing. Workshop
+    // prerequisites are required *of workshops*; demanding them from a lightning
+    // talk would be refusing a submission over a question nobody put.
+    const governing = conditions.filter((c) => c.field_slug === field.slug);
+    const asked = governing.every((c) => conditionHolds(c, answerOf));
+
+    if (requireRequired && asked && field.required && value === '') {
       throw badRequest(`missing required field: ${field.label}`,
         `send ${acceptedNames(field)} in the request body`);
     }

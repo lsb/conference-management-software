@@ -1,0 +1,1 @@
+This directory contains a conference management app. The developer rebuilding the Manzanita 2026 website does not want to paste our HTML block into their page - they want to fetch the programme as JSON and render it with their own templates. Set that up, and tell them the exact URL to fetch.

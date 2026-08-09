@@ -14,7 +14,7 @@ import { readStoredFile, isImage } from '../core/files.js';
 import { renderFeed } from '../core/feeds.js';
 import {
   fieldsOf, isClosed, mappedValues, valueOf, acceptedNames,
-  optionResolver, conditionsFor, renderField,
+  optionResolver, conditionsFor, renderField, CONDITIONAL_FIELD_SCRIPT, validateAnswers,
 } from './formfields.js';
 import { resolvePersonByEmail } from './demo-auth.js';
 import { findEvent, dateOnly, fullName, empty, when } from './shared.js';
@@ -182,6 +182,7 @@ function cfpForm(ctx) {
 
   return ok(page({
     title: form.external_title || `Submit to ${event.name}`,
+    script: conditions.length > 0 ? CONDITIONAL_FIELD_SCRIPT : null,
     body: html`
       <h1>${form.page_heading || form.external_title || 'Call for speakers'}</h1>
 
@@ -246,18 +247,12 @@ function postCfp(ctx) {
   // A draft is a promise to come back, not a finished proposal, so only the
   // title is insisted on. Everything else can arrive on Sunday night.
   const asDraft = ctx.fields.bool('save_draft');
+  const allFields = [...abstractFields, ...participantFields];
 
-  for (const field of [...abstractFields, ...participantFields]) {
-    const value = valueOf(ctx.fields, field);
-    if (field.required && value === '' && !asDraft) {
-      throw badRequest(`missing required field: ${field.label}`,
-        `send ${acceptedNames(field)} in the request body`);
-    }
-    if (field.max_chars && value.length > field.max_chars) {
-      throw badRequest(`${field.label} is longer than ${field.max_chars} characters`,
-        `it was ${value.length}`);
-    }
-  }
+  validateAnswers(ctx.fields, allFields, {
+    requireRequired: !asDraft,
+    conditions: conditionsFor(ctx.db, form.id),
+  });
 
   // Read values through the form's own `maps_to` definitions rather than by
   // guessing at names. An organizer who renames a field, or whose field slug is

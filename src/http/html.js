@@ -56,11 +56,15 @@ export function join(values, separator = '') {
 /**
  * A full page.
  *
- * Deliberately one stylesheet, inlined, and no JavaScript. Every action on every
- * page is a link or a form submission, which means the whole app works with
- * scripting off, over `curl`, and for anything driving it programmatically.
+ * Deliberately one stylesheet, inlined. Every action on every page is a link or
+ * a form submission, so the whole app works with scripting off, over `curl`, and
+ * for anything driving it programmatically.
+ *
+ * `script` exists for progressive enhancement only -- something that makes a
+ * page nicer and that nothing depends on. If a page stops working without it,
+ * the script is doing too much.
  */
-export function page({ title, nav = null, body, wide = false }) {
+export function page({ title, nav = null, body, wide = false, script = null }) {
   return new SafeHtml(`<!doctype html>
 <html lang="en">
 <head>
@@ -74,6 +78,7 @@ ${nav ? render(nav) : ''}
 <main class="${wide ? 'wide' : ''}">
 ${render(body)}
 </main>
+${script ? `<script>${script}</script>` : ''}
 </body>
 </html>
 `);

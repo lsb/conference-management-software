@@ -145,23 +145,44 @@ into a visible feature.
 
 ---
 
-## D10 — No JavaScript, and the two techniques that make that hold
+## D10 — No JavaScript is *required*, and three techniques that make that hold
 
-**Decision.** The public surfaces use no script at all. Where interactivity is
-genuinely needed, use the platform:
+*Revised 2026-08-09. This decision originally said "no script at all". That was
+too absolute, and the revision is recorded rather than quietly edited.*
+
+**Decision.** Nothing requires JavaScript. Every page works, and every action
+completes, with scripting off. Where interactivity helps, use the platform
+first:
 
 - `<details>`/`<summary>` for show-more disclosure. Native, keyboard accessible,
   and legible to anything driving the page.
 - A cookie written by an ordinary form POST for the attendee's personal
   schedule. It survives a full reload with no account and no script.
+- Up and down buttons rather than dragging, for reordering form questions.
+
+Script is permitted only as enhancement: something that makes a page nicer and
+that nothing depends on. If a page stops working without it, the script is doing
+too much. There is currently exactly one, about forty lines, which shows and
+hides conditional form questions as somebody answers.
 
 **Why.** Every JavaScript-dependent interaction is a thing that can fail under a
 10-second timeout, in a screen reader, or under an agent that only sees the
-accessibility tree. The two hard cases turned out to have plain-HTML answers, so
-the cost of the rule is close to zero.
+accessibility tree. Most of the hard cases turned out to have plain-HTML
+answers, so the rule is nearly free.
 
-**Where this bends.** Drag-and-drop scheduling cannot be done without script.
-That stays progressive enhancement over a working forms-based scheduler
+**Why it bent.** Conditional questions were the case where it did not. A form
+that asks about workshop prerequisites has no business asking a lightning talk,
+and the alternatives were worse: a page round-trip per answer, or a wall of
+irrelevant questions. The enhancement is layered over markup the server already
+emits, and the server independently re-checks every condition on submit -- so a
+question that was not asked is not required, whether or not the script ran.
+
+**The rule the bend has to obey.** The server is the authority. A script may
+change what is *shown*; it may never be the thing that decides what is *valid*.
+Validation that only exists in the browser is validation that does not exist.
+
+**Where this still bends further.** Drag-and-drop scheduling cannot be done
+without script. That stays enhancement over a working forms-based scheduler
 (see D4), which is also what keeps it operable by keyboard.
 
 ---
