@@ -153,9 +153,20 @@ Approve the content first, then publish.
 
 **`/api/events/<event>/agenda` is not a public feed.** It is organizer data: no
 CORS header, and it includes accepted sessions that are unapproved and
-unannounced. The public, cross-origin feed is `/embed/<event>/<slug>`, and an
-embed records its own format -- so a JSON feed means *creating* one with
-`format=json`. The extension on the URL is cosmetic and converts nothing.
+unannounced. The public, cross-origin feed is `/embed/<event>/<slug>`.
+
+**An embed records its own format**, so giving somebody a JSON feed means
+*creating* one with `format=json`. Adding `.json` to the URL of an HTML embed
+converts nothing -- the extension is cosmetic. Listing the embeds that exist is
+not the same as making the one you were asked for:
+
+```sh
+./bin/conf embeds <event> --create "Programme" --feed agenda --format json
+# or
+curl -s -X POST http://127.0.0.1:8080/e/<event>/embeds \
+     --data-urlencode 'name=Programme' --data-urlencode 'feed=agenda' \
+     --data-urlencode 'format=json'
+```
 
 ## Counting
 

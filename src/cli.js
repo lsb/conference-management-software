@@ -148,7 +148,12 @@ export function run(argv) {
 
   const handler = COMMANDS[command];
   if (!handler) {
-    fail(`unknown command '${command}'`, `run 'conf --help' for the list`);
+    const close = Object.keys(COMMANDS)
+      .filter((name) => name.startsWith(command) || command.startsWith(name)
+        || editDistance(name, command) <= 2)
+      .slice(0, 3);
+    fail(`unknown command '${command}'`,
+      close.length ? `did you mean: ${close.join(', ')}?` : `run 'conf --help' for the list`);
     return 64;
   }
 
@@ -737,10 +742,11 @@ const COMMANDS = {
       }));
 
     output(args, rows, 'No embeds yet.', 'embed');
-    if (!args.json && rows.length === 0) {
+    if (!args.json) {
       console.log(`\nMake one:  conf embeds ${event.slug} --create "Agenda" --feed agenda --format json`);
       console.log(`  feeds:   ${FEEDS.map((f) => f.value).join(', ')}`);
       console.log(`  formats: ${FORMATS.map((f) => f.value).join(', ')}`);
+      console.log('  an embed records its own format; the extension on the URL is cosmetic.');
     }
     return 0;
   },
@@ -1001,6 +1007,29 @@ function localToInstant(value, timezone) {
 
   const offset = guess.getTime() - new Date(`${asLocal}Z`).getTime();
   return new Date(guess.getTime() + offset).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * How many single-character edits separate two strings.
+ *
+ * Only used to turn "unknown command 'embed'" into "did you mean: embeds?".
+ * Getting the name nearly right and being sent to a help page is a small
+ * cruelty when the answer is one letter away.
+ */
+function editDistance(a, b) {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) rows[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return rows[a.length][b.length];
 }
 
 function fullNameOf(person) {
