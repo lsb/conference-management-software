@@ -10,7 +10,7 @@
 
 import { json, badRequest } from '../http/router.js';
 import { decide, notify, awaitingNotification, participantsOf } from '../core/submissions.js';
-import { outstandingTasks, runReminders } from '../core/tasks.js';
+import { outstandingTasks, runReminders, taskDefinitions } from '../core/tasks.js';
 import { findConflicts, scheduledSessions, unscheduledSessions } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
 import { findEvent, findSubmission, requireOrganizer, statusCounts, STATUS_TABS, fullName } from './shared.js';
@@ -50,7 +50,7 @@ export function mountApi(router) {
     'Accepted speakers, with what each still owes.');
 
   router.get('/api/events/:event/tasks', listTasks,
-    'Outstanding speaker tasks. ?person=slug to narrow to one.');
+    'Outstanding speaker tasks. ?task=slug for one kind (e.g. task=headshot), ?person=slug for one person.');
 
   router.post('/api/events/:event/reminders', postReminders,
     'Queue reminder emails. Body: {"dry_run":true} to preview without sending.');
@@ -333,10 +333,18 @@ function listTasks(ctx) {
     personId = person.id;
   }
 
-  const tasks = outstandingTasks(ctx.db, event.id, { personId });
+  const definitions = taskDefinitions(ctx.db, event.id);
+  const taskSlug = ctx.query.get('task');
+  if (taskSlug && !definitions.some((d) => d.slug === taskSlug)) {
+    throw badRequest(`no task called '${taskSlug}' at this event`,
+      `tasks are: ${definitions.map((d) => d.slug).join(', ')}`);
+  }
+
+  const tasks = outstandingTasks(ctx.db, event.id, { personId, taskSlug });
   return json({
     event: event.slug,
     count: tasks.length,
+    available_tasks: definitions.map((d) => d.slug),
     tasks: tasks.map((t) => ({
       task: t.task_slug,
       title: t.task_title,

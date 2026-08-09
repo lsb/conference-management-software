@@ -74,7 +74,7 @@ export function assignTasksOnAccept(db, submissionId) {
  * missing a bio or headshot") and the reminder engine, so the two can never
  * disagree about who is behind.
  */
-export function outstandingTasks(db, eventId, { personId = null } = {}) {
+export function outstandingTasks(db, eventId, { personId = null, taskSlug = null } = {}) {
   return db.prepare(
     `SELECT ti.id, ti.status, ti.submission_id, ti.person_id,
             td.slug AS task_slug, td.title AS task_title, td.due_at, td.required,
@@ -87,8 +87,16 @@ export function outstandingTasks(db, eventId, { personId = null } = {}) {
        LEFT JOIN submission s ON s.id = ti.submission_id
       WHERE td.event_id = ? AND ti.status = 'todo'
         AND (? IS NULL OR ti.person_id = ?)
-      ORDER BY td.due_at IS NULL, td.due_at, p.last_name, p.first_name`,
-  ).all(eventId, personId, personId);
+        AND (? IS NULL OR td.slug = ?)
+      ORDER BY td.due_at IS NULL, td.due_at, td.slug, p.last_name, p.first_name`,
+  ).all(eventId, personId, personId, taskSlug, taskSlug);
+}
+
+/** The task definitions for an event, for anything that offers a filter. */
+export function taskDefinitions(db, eventId) {
+  return db.prepare(
+    'SELECT slug, title, applies_to, requirement, due_at FROM task_definition WHERE event_id = ? ORDER BY sort_order, slug',
+  ).all(eventId);
 }
 
 /** Mark a task done. `fileId` is required when the task is a file upload. */

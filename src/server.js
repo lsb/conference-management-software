@@ -17,6 +17,7 @@ import { currentPerson } from './core/auth.js';
 import { mountPublic } from './routes/public.js';
 import { mountOrganizer } from './routes/organizer.js';
 import { mountPortal } from './routes/portal.js';
+import { mountReviewer } from './routes/reviewer.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -26,6 +27,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountPublic(router);
   mountOrganizer(router);
   mountPortal(router);
+  mountReviewer(router);
   mountApi(router);
   mountMeta(router);
 
@@ -214,6 +216,7 @@ export function llmsTxt(router) {
 function groupOf(pattern) {
   if (pattern.startsWith('/api/')) return 'JSON API';
   if (pattern.startsWith('/portal')) return 'Speaker portal';
+  if (pattern.startsWith('/review')) return 'Reviewer';
   if (pattern.startsWith('/submit')) return 'Public call for speakers';
   if (pattern.startsWith('/e/')) return 'Organizer';
   return 'General';

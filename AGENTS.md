@@ -16,6 +16,7 @@ the command line. It is fast and it prints a table.
 ./bin/conf show <event> SESS-3         # one submission in full
 ./bin/conf speakers <event>            # accepted speakers, and what they owe
 ./bin/conf tasks <event>               # who still owes what
+./bin/conf tasks <event> --task headshot   # who owes ONE particular thing
 ./bin/conf conflicts <event>           # clashes in the schedule
 ./bin/conf agenda <event>              # the schedule
 ./bin/conf outbox <event>              # every message the app has generated
@@ -23,6 +24,11 @@ the command line. It is fast and it prints a table.
 
 Add `--json` to any of them for machine-readable output. `./bin/conf --help`
 lists everything.
+
+When a question is about one particular kind of thing ("who owes a headshot",
+"which submissions are pending"), filter with a flag rather than listing
+everything and reading through it. A filtered list is a complete answer; a long
+mixed list is one you have to be careful with.
 
 The event you almost certainly want is `manzanita-2026`.
 

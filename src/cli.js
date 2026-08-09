@@ -8,7 +8,7 @@
 
 import { openDatabase, DEFAULT_DB_PATH } from './db.js';
 import { decide, notify, awaitingNotification, participantsOf } from './core/submissions.js';
-import { outstandingTasks, runReminders } from './core/tasks.js';
+import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
 import { findConflicts, scheduledSessions, unscheduledSessions, localTime, localDay } from './core/schedule.js';
 import { createMagicLink } from './core/auth.js';
 
@@ -27,7 +27,8 @@ Usage:
   conf agenda <event>                    the schedule
   conf conflicts <event>                 clashes in the schedule
   conf speakers <event>                  accepted speakers and what they owe
-  conf tasks <event> [--person SLUG]     outstanding speaker tasks
+  conf tasks <event> [--task SLUG]       outstanding speaker tasks
+                     [--person SLUG]     e.g. --task headshot to see who owes a headshot
   conf remind <event> [--dry-run]        queue reminder emails
   conf outbox <event> [--limit N]        messages this app has generated
   conf portal-link <event> <person-slug> a one-time sign-in link for a speaker
@@ -255,6 +256,7 @@ const COMMANDS = {
 
   tasks(db, args) {
     const event = requireEvent(db, args._[1]);
+
     let personId = null;
     if (args.person) {
       const person = db.prepare('SELECT id FROM person WHERE slug = ?').get(args.person);
@@ -263,14 +265,30 @@ const COMMANDS = {
       personId = person.id;
     }
 
-    const rows = outstandingTasks(db, event.id, { personId }).map((t) => ({
+    const definitions = taskDefinitions(db, event.id);
+    const taskSlug = args.task ?? null;
+    if (taskSlug && !definitions.some((d) => d.slug === taskSlug)) {
+      throw withHint(new Error(`no task called '${taskSlug}' at this event`),
+        `tasks are: ${definitions.map((d) => d.slug).join(', ')}`);
+    }
+
+    const rows = outstandingTasks(db, event.id, { personId, taskSlug }).map((t) => ({
       person: `${t.first_name} ${t.last_name}`,
       email: t.email,
       task: t.task_title,
       for: t.submission_code ?? '-',
       due: t.due_at?.slice(0, 10) ?? '-',
     }));
-    return output(args, rows, 'Everybody is up to date.');
+
+    output(args, rows, 'Everybody is up to date.');
+
+    // Without this, "who owes a headshot" means eyeballing a mixed list and
+    // hoping you did not miss a row. Naming the filter is what makes the
+    // question answerable in one command.
+    if (!args.json && !taskSlug && definitions.length > 1 && rows.length > 0) {
+      console.log(`\nFilter to one task with --task <slug>: ${definitions.map((d) => d.slug).join(', ')}`);
+    }
+    return 0;
   },
 
   remind(db, args) {

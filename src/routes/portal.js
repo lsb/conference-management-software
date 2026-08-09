@@ -28,6 +28,9 @@ export function mountPortal(router) {
   router.post('/portal/:event/profile', postProfile, 'Save the speaker\'s own details.');
   router.get('/portal/:event/tasks', portalTasks, 'What this speaker still owes.');
   router.post('/portal/:event/tasks/:id/complete', postCompleteTask, 'Mark one task done.');
+  router.get('/portal/:event/resources', resourceIndex,
+    'Reference pages for speakers: AV guidance, travel, the agreement.');
+  router.get('/portal/:event/resources/:slug', resourcePage, 'One reference page.');
 }
 
 function requirePerson(ctx, event) {
@@ -118,7 +121,8 @@ function doSignOut(ctx) {
 // --- the portal ------------------------------------------------------------
 
 function nav(event, current, person) {
-  const items = [['', 'Home'], ['/submissions', 'Submissions'], ['/profile', 'Profile'], ['/tasks', 'Tasks']];
+  const items = [['', 'Home'], ['/submissions', 'Submissions'], ['/profile', 'Profile'],
+    ['/tasks', 'Tasks'], ['/resources', 'Resources']];
   return html`
     <header class="bar">
       <div class="inner">
@@ -354,6 +358,63 @@ function portalTasks(ctx) {
               <td>${t.submission_code ? html`<code>${t.submission_code}</code>` : ''}</td>
               <td class="muted">${dateOnly(t.completed_at, event.timezone)}</td></tr>`)}
         </tbody></table>` : ''}
+    `,
+  }));
+}
+
+function resourceIndex(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const person = requirePerson(ctx, event);
+
+  const pages = ctx.db.prepare(
+    `SELECT slug, title FROM resource_page WHERE event_id = ? AND published = 1
+      ORDER BY sort_order, title`,
+  ).all(event.id);
+
+  return ok(page({
+    title: `Resources - ${event.name}`,
+    nav: nav(event, 'Resources', person),
+    body: html`
+      <h1>Resources</h1>
+      <p class="sub">Everything we would otherwise have emailed you twice.</p>
+      ${pages.length === 0 ? empty('Nothing here yet.') : html`
+        <div class="stack">
+          ${pages.map((p) => html`
+            <div class="card">
+              <a href="/portal/${event.slug}/resources/${p.slug}"><strong>${p.title}</strong></a>
+            </div>`)}
+        </div>`}
+    `,
+  }));
+}
+
+function resourcePage(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const person = requirePerson(ctx, event);
+
+  const resource = ctx.db.prepare(
+    'SELECT * FROM resource_page WHERE event_id = ? AND slug = ? AND published = 1',
+  ).get(event.id, ctx.params.slug);
+
+  if (!resource) {
+    const known = ctx.db.prepare(
+      'SELECT slug FROM resource_page WHERE event_id = ? AND published = 1',
+    ).all(event.id).map((r) => r.slug);
+    throw notFound(`no resource page '${ctx.params.slug}'`,
+      known.length ? `pages are: ${known.join(', ')}` : 'this event has no resource pages');
+  }
+
+  return ok(page({
+    title: `${resource.title} - ${event.name}`,
+    nav: nav(event, 'Resources', person),
+    body: html`
+      <p class="sub"><a href="/portal/${event.slug}/resources">&larr; Resources</a></p>
+      <h1>${resource.title}</h1>
+      ${/* Organizer-authored content, including embed markup, which is the point
+            of the feature: an existing AV guide can be pasted in whole. Speakers
+            cannot write here -- only event staff can, so the trust boundary is
+            the same one that already lets staff email them. */ ''}
+      <div>${raw(resource.body)}</div>
     `,
   }));
 }
