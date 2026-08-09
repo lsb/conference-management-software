@@ -163,6 +163,63 @@ Two techniques carried the no-script rule further than expected: `<details>` for
 show-more, and a cookie written by a form POST for the attendee's personal
 schedule, which survives a full reload with no account at all.
 
+## 2026-08-09 — The eval sent four emails it should not have
+
+The clearest thing this project has produced, and it is not a feature.
+
+A local model was asked to email everyone who still owed us paperwork. Looking
+for a preview, it typed:
+
+```
+$ ./bin/conf notify manzanita-2026 ---dry-run
+4 sent, 0 skipped. Messages are in the outbox.
+```
+
+Three dashes instead of two. `parseArgs` accepted any `--`-prefixed token, no
+command validated what it got, so the flag was dropped and the command the model
+believed was a preview sent every queued decision for real. Two acceptances and
+two rejections went out. Theo Lambert, who owes us nothing, was told his talk
+had been declined. Five of the seven people who actually owed something got
+nothing.
+
+We reproduced it by hand before changing a line.
+
+Three separate mistakes lined up, and all three are ours:
+
+1. **An unrecognised flag was ignored rather than refused.** The single worst
+   default in the codebase. A flag you cannot see is worse than no flag at all,
+   because it makes a command look like it did something safe.
+2. **`notify` with no arguments meant "everyone".** For an irreversible,
+   emotionally loaded email, the default should never be the widest possible
+   blast radius.
+3. **`notify` was the only thing in `conf --help` with the word "email" next to
+   it.** Asked to email a group, a tired human at 11pm reaches for exactly the
+   same command. The model was not being stupid; it was being led.
+
+What is worth sitting with is that none of our 126 tests would ever have caught
+this. Every one of them calls the functions correctly. It took something that
+did not know the tool, trying to do a reasonable thing, under time pressure.
+That is the entire argument for driving your own software with a model that is
+not clever enough to paper over your mistakes.
+
+Fixed: flags are declared per command and anything else is an error naming what
+would have worked; `notify` refuses to run without explicit codes or `--all`,
+and has a real `--dry-run`; and `conf mail` now exists as a separate verb, so
+"send a message to a group" and "announce a decision" are different words.
+
+The same run found three features that had an organizer screen and no command
+at all -- reviews, bulk mail, and what the public can actually see -- and the
+model burned its whole budget hunting for commands that were not there. All
+three exist now. It also found `conf submissions --status unscored` returning a
+confident empty list, which reads exactly like "there are none" and is how a
+wrong answer gets believed.
+
+And a regression of our own, caught the same hour: the approval gate added that
+morning emptied every public surface, because the seed published sessions
+without approving them. The demo agenda was blank and nothing said so. Fixed,
+plus a dashboard warning, because ticking "show publicly" on unapproved content
+otherwise does precisely nothing and you find out from an empty website.
+
 ## Open questions
 
 - Which direction the registration-platform integration should run. "One-way" is
