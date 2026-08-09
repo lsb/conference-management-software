@@ -19,6 +19,7 @@ import { mountOrganizer } from './routes/organizer.js';
 import { mountPortal } from './routes/portal.js';
 import { mountReviewer } from './routes/reviewer.js';
 import { mountMail } from './routes/mail.js';
+import { mountWidgets } from './routes/widgets.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -30,6 +31,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountPortal(router);
   mountReviewer(router);
   mountMail(router);
+  mountWidgets(router);
   mountApi(router);
   mountMeta(router);
 

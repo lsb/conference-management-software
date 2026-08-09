@@ -1,6 +1,7 @@
 // Reading requests: bodies, cookies, and typed form access.
 
 import { badRequest } from './router.js';
+import { parseMultipart } from './multipart.js';
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
@@ -52,8 +53,13 @@ export async function parseBody(req) {
     return new Fields(out);
   }
 
+  if (type === 'multipart/form-data') {
+    const { fields, files } = parseMultipart(raw, req.headers['content-type']);
+    return new Fields(fields, files);
+  }
+
   throw badRequest(`unsupported content-type '${type}'`,
-    'use application/x-www-form-urlencoded or application/json');
+    'use application/x-www-form-urlencoded, application/json, or multipart/form-data');
 }
 
 /**
@@ -61,12 +67,28 @@ export async function parseBody(req) {
  * error naming the field rather than a downstream crash.
  */
 export class Fields {
-  constructor(data) {
+  constructor(data, files = {}) {
     this.data = data;
+    this.files = files;
   }
 
   has(name) {
     return Object.hasOwn(this.data, name);
+  }
+
+  /** An uploaded file by field name, or null when none was chosen. */
+  file(name) {
+    return this.files[name] ?? null;
+  }
+
+  /** An uploaded file that has to be there, named in the error when it is not. */
+  requireFile(name, hint = '') {
+    const file = this.file(name);
+    if (!file) {
+      throw badRequest(`no file uploaded for '${name}'`,
+        hint || `attach a file in the '${name}' field of a multipart/form-data request`);
+    }
+    return file;
   }
 
   /** A trimmed string, or `fallback` when absent or blank. */

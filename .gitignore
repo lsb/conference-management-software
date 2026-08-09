@@ -6,6 +6,9 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 
+# Uploaded files. Content-addressed under data/uploads/<sha prefix>/<sha>.
+data/uploads/
+
 # Eval scratch output. Curated transcripts get committed under eval/transcripts/.
 eval/runs/
 .DS_Store

@@ -8,8 +8,9 @@ import { createSubmission, setStatus, logActivity } from '../core/submissions.js
 import { queueEmail, getTemplate } from '../core/mail.js';
 import { createMagicLink, SESSION_COOKIE, consumeMagicLink } from '../core/auth.js';
 import { cookieHeader } from '../http/request.js';
-import { scheduledSessions, agendaByDay, localTime } from '../core/schedule.js';
+import { scheduledSessions } from '../core/schedule.js';
 import { buildIcs, uidFor, nextSequence } from '../core/ics.js';
+import { readStoredFile, isImage } from '../core/files.js';
 import { findEvent, dateOnly, fullName, empty, when } from './shared.js';
 
 export function mountPublic(router) {
@@ -21,17 +22,44 @@ export function mountPublic(router) {
   router.post('/submit/:event/:form', postCfp,
     'Submit a proposal. Creates the person if new, emails a confirmation, and returns a portal link.');
 
-  router.get('/agenda/:event', publicAgenda,
-    'The published schedule. Only sessions marked public appear.');
-
-  router.get('/speakers/:event', speakerGallery,
-    'The published speaker gallery.');
-
   router.get('/embed/:event/:embed', embedFeed,
     'A styled HTML fragment of the agenda or speakers, for embedding in another site.');
 
   router.get('/agenda/:event/:code.ics', sessionIcs,
     'A calendar entry for one published session, for attendees to add to their own calendar.');
+
+  router.get('/files/:slug', serveFile,
+    'A stored file: a headshot, a slide deck, a signed agreement.');
+}
+
+/**
+ * Serve a stored file.
+ *
+ * Served with the content-type we recorded at upload, not the one the browser
+ * claimed, and always with `X-Content-Type-Options: nosniff` and a
+ * `Content-Security-Policy` that forbids scripts. A speaker uploading an
+ * "image" full of HTML gets it back as an inert download, not as a page running
+ * on our origin.
+ */
+function serveFile(ctx) {
+  const stored = readStoredFile(ctx.db, ctx.params.slug);
+  if (!stored) throw notFound(`no file '${ctx.params.slug}'`);
+
+  const { file, data } = stored;
+  return {
+    status: 200,
+    headers: {
+      'content-type': file.content_type,
+      'content-length': String(data.length),
+      'content-disposition':
+        `${isImage(file) ? 'inline' : 'attachment'}; filename="${file.filename}"`,
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox",
+      // Content-addressed, so the bytes behind a slug never change.
+      'cache-control': 'public, max-age=31536000, immutable',
+    },
+    body: data,
+  };
 }
 
 /**
@@ -96,8 +124,7 @@ function home(ctx) {
                 <td><strong>${e.name}</strong><br><span class="muted">${e.location}</span></td>
                 <td>${dateOnly(e.starts_at, e.timezone)} &ndash; ${dateOnly(e.ends_at, e.timezone)}</td>
                 <td><a href="/e/${e.slug}">Dashboard</a></td>
-                <td><a href="/agenda/${e.slug}">Agenda</a> &middot;
-                    <a href="/speakers/${e.slug}">Speakers</a></td>
+                <td><a href="/event/${e.slug}">Public pages</a></td>
               </tr>`)}
           </tbody>
         </table>`}
@@ -430,39 +457,11 @@ function publishedSessions(db, eventId) {
   return scheduledSessions(db, eventId).filter((s) => s.published && s.status === 'accepted');
 }
 
-function publicAgenda(ctx) {
-  const event = findEvent(ctx.db, ctx.params.event);
-  const sessions = publishedSessions(ctx.db, event.id);
-  const days = agendaByDay(ctx.db, event.id, event.timezone)
-    .map(({ day, sessions: list }) => ({ day, sessions: list.filter((s) => s.published && s.status === 'accepted') }))
-    .filter((d) => d.sessions.length > 0);
 
-  return ok(page({
-    title: `${event.name} - agenda`,
-    body: html`
-      <h1>${event.name}</h1>
-      <p class="sub">${dateOnly(event.starts_at, event.timezone)} &ndash; ${dateOnly(event.ends_at, event.timezone)}
-        ${event.location ? html` &middot; ${event.location}` : ''} &middot;
-        <a href="/speakers/${event.slug}">Speakers</a></p>
-
-      ${sessions.length === 0 ? empty('The schedule is not published yet.') : days.map(({ day, sessions: list }) => html`
-        <h2>${day}</h2>
-        <table>
-          <thead><tr><th>Time</th><th>Session</th><th>Room</th><th>Track</th><th>Add</th></tr></thead>
-          <tbody>
-            ${list.map((s) => html`
-              <tr>
-                <td>${localTime(s.starts_at, event.timezone)}</td>
-                <td><strong>${s.title}</strong><br><span class="muted">${speakerNames(ctx.db, s.id)}</span></td>
-                <td>${s.room_name ?? ''}</td>
-                <td>${s.track_name ?? ''}</td>
-                <td><a href="/agenda/${event.slug}/${s.code}.ics"
-                       title="Add ${s.code} to your calendar">calendar</a></td>
-              </tr>`)}
-          </tbody>
-        </table>`)}
-    `,
-  }));
+/** A person's headshot slug, for building its URL. Null when they have none. */
+function headshotSlugFor(db, person) {
+  if (!person.headshot_file_id) return null;
+  return db.prepare('SELECT slug FROM file WHERE id = ?').get(person.headshot_file_id)?.slug ?? null;
 }
 
 /** Everyone speaking across a set of sessions, each listed once. */
@@ -488,33 +487,6 @@ function speakerNames(db, submissionId) {
   ).all(submissionId).map(fullName).join(', ');
 }
 
-function speakerGallery(ctx) {
-  const event = findEvent(ctx.db, ctx.params.event);
-  const people = ctx.db.prepare(
-    `SELECT DISTINCT p.* FROM person p
-       JOIN submission_participant sp ON sp.person_id = p.id
-       JOIN submission s ON s.id = sp.submission_id
-      WHERE s.event_id = ? AND s.status = 'accepted' AND s.published = 1
-      ORDER BY p.last_name, p.first_name`,
-  ).all(event.id);
-
-  return ok(page({
-    title: `${event.name} - speakers`,
-    body: html`
-      <h1>Speakers</h1>
-      <p class="sub"><a href="/agenda/${event.slug}">Back to the agenda</a></p>
-      ${people.length === 0 ? empty('No speakers announced yet.') : html`
-        <div class="grid2">
-          ${people.map((p) => html`
-            <div class="card">
-              <strong>${fullName(p)}</strong>
-              ${p.biography ? html`<p>${p.biography}</p>` : ''}
-              ${p.link_website ? html`<p><a href="${p.link_website}">${p.link_website}</a></p>` : ''}
-            </div>`)}
-        </div>`}
-    `,
-  }));
-}
 
 /**
  * A fragment for embedding elsewhere.

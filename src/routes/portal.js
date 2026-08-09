@@ -10,6 +10,7 @@ import { createMagicLink, consumeMagicLink, signOut, SESSION_COOKIE, organizerAc
 import { cookieHeader, clearCookieHeader } from '../http/request.js';
 import { outstandingTasks, completeTask } from '../core/tasks.js';
 import { queueEmail } from '../core/mail.js';
+import { storeUpload, IMAGE_TYPES } from '../core/files.js';
 import { findEvent, statusPill, empty, dateOnly, when, fullName } from './shared.js';
 
 export function mountPortal(router) {
@@ -257,7 +258,19 @@ function profileForm(ctx) {
       <p class="sub">This is what appears in the programme and on the website. You control it.</p>
       ${saved ? html`<p class="flash">Saved.</p>` : ''}
 
-      <form method="post" action="/portal/${event.slug}/profile">
+      <form method="post" action="/portal/${event.slug}/profile" enctype="multipart/form-data">
+        <fieldset>
+          <legend>Your headshot</legend>
+          ${person.headshot_file_id ? html`
+            <p><img src="/files/${headshotSlug(ctx.db, person)}" alt="Your current headshot"
+                    style="max-width:9rem;border-radius:8px"></p>` : html`
+            <p class="muted">You have not uploaded one yet. It goes on the website and in
+              the printed programme.</p>`}
+          <label for="headshot">Upload ${person.headshot_file_id ? 'a replacement' : 'one'}
+            <small>JPEG, PNG or WebP. Square works best.</small></label>
+          <input type="file" id="headshot" name="headshot" accept="image/*">
+        </fieldset>
+
         <fieldset>
           <legend>About you</legend>
           <div class="row">
@@ -293,9 +306,24 @@ function profileForm(ctx) {
   }));
 }
 
+/** The slug of a person's headshot, for building its URL. */
+function headshotSlug(db, person) {
+  if (!person.headshot_file_id) return null;
+  return db.prepare('SELECT slug FROM file WHERE id = ?').get(person.headshot_file_id)?.slug ?? null;
+}
+
 function postProfile(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   const person = requirePerson(ctx, event);
+
+  const upload = ctx.fields.file('headshot');
+  if (upload) {
+    const stored = storeUpload(ctx.db, {
+      eventId: event.id, personId: person.id, upload, accept: IMAGE_TYPES,
+    });
+    ctx.db.prepare('UPDATE person SET headshot_file_id = ? WHERE id = ?')
+      .run(stored.id, person.id);
+  }
 
   ctx.db.prepare(
     `UPDATE person SET first_name = ?, last_name = ?, pronouns = ?, honorific = ?, phone = ?,
@@ -339,11 +367,11 @@ function portalTasks(ctx) {
             <legend>${t.task_title}${t.required ? html` <span class="req">*</span>` : ''}</legend>
             ${t.submission_code ? html`<p class="muted">For <code>${t.submission_code}</code> &mdash; ${t.submission_title}</p>` : ''}
             <p>${t.due_at ? html`Due ${dateOnly(t.due_at, event.timezone)}` : html`<span class="muted">No deadline</span>`}</p>
-            <form method="post" action="/portal/${event.slug}/tasks/${t.id}/complete">
+            <form method="post" action="/portal/${event.slug}/tasks/${t.id}/complete"
+                  enctype="multipart/form-data">
               ${t.requirement === 'file' ? html`
-                <label for="file_${t.id}">Upload</label>
-                <input type="text" id="file_${t.id}" name="file_name" placeholder="file name">
-                <p class="muted">File uploads are recorded by name in this build.</p>` : ''}
+                <label for="file_${t.id}">Upload your file</label>
+                <input type="file" id="file_${t.id}" name="upload" required>` : ''}
               <div class="actions">
                 <button type="submit">${t.requirement === 'acknowledge' ? 'I have done this' : 'Mark done'}</button>
               </div>
@@ -436,13 +464,8 @@ function postCompleteTask(ctx) {
 
   let fileId = null;
   if (instance.requirement === 'file') {
-    const name = ctx.fields.get('file_name');
-    if (!name) throw badRequest('this task needs a file', 'give a file name to record against it');
-    fileId = ctx.db.prepare(
-      `INSERT INTO file (slug, event_id, uploaded_by_person_id, filename, content_type,
-                         byte_size, sha256, storage_path, created_at)
-       VALUES (?, ?, ?, ?, 'application/octet-stream', 0, '', ?, ?) RETURNING id`,
-    ).get(`task-${id}-${Date.now()}`, event.id, person.id, name, name, now()).id;
+    const upload = ctx.fields.requireFile('upload', 'this task is completed by uploading a file');
+    fileId = storeUpload(ctx.db, { eventId: event.id, personId: person.id, upload }).id;
   }
 
   completeTask(ctx.db, id, { fileId });

@@ -19,6 +19,10 @@ import { createSubmission, decide, notify, setStatus, logActivity } from './core
 import { completeTask } from './core/tasks.js';
 import { queueEmail, getTemplate } from './core/mail.js';
 import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { UPLOAD_DIR } from './core/files.js';
 
 // ---------------------------------------------------------------------------
 // A virtual clock
@@ -245,21 +249,91 @@ function addParticipant(submissionId, personId, { role = 'speaker', primary = fa
 }
 
 /**
- * A stand-in for an uploaded file.
+ * A seeded file, with real bytes on disk.
  *
- * Nothing is written to data/uploads: the digest is taken over the storage path
- * so it is stable across runs and obviously not a real content hash.
+ * These used to be metadata-only rows, which meant the demo's speaker gallery
+ * rendered a grid of broken images -- the sort of thing that is invisible in a
+ * database and obvious to the first person who opens the page. Generated images
+ * are deterministic (derived from the filename), so re-seeding produces
+ * byte-identical files and the content hashes stay stable.
  */
-function addFile(eventId, personId, { filename, contentType, bytes }) {
-  const storagePath = `${eventId}/${filename}`;
-  const slug = uniqueSlug(filename,
+function addFile(eventId, personId, { filename, contentType }) {
+  const data = contentType.startsWith('image/')
+    ? placeholderPng(filename)
+    : Buffer.from(`Placeholder for ${filename}. Seeded demo data.\n`);
+
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  const storagePath = join(sha256.slice(0, 2), sha256.slice(2));
+  const absolute = join(UPLOAD_DIR, storagePath);
+  if (!existsSync(absolute)) {
+    mkdirSync(dirname(absolute), { recursive: true });
+    writeFileSync(absolute, data);
+  }
+
+  const slug = uniqueSlug(filename.replace(/\.[^.]+$/, ''),
     (s) => Boolean(db.prepare('SELECT 1 FROM file WHERE slug = ?').get(s)));
+
   return db.prepare(
     `INSERT INTO file (slug, event_id, uploaded_by_person_id, filename, content_type,
                        byte_size, sha256, storage_path, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-  ).get(slug, eventId, personId, filename, contentType, bytes,
-    createHash('sha256').update(storagePath).digest('hex'), storagePath, now());
+  ).get(slug, eventId, personId, filename, contentType.startsWith('image/') ? 'image/png' : contentType,
+    data.length, sha256, storagePath, now());
+}
+
+/**
+ * A small solid-colour PNG, coloured from a hash of the name so the gallery
+ * shows distinguishable tiles rather than one repeated square.
+ *
+ * Written by hand because the app has no image library and does not need one.
+ */
+function placeholderPng(seed) {
+  const digest = createHash('sha256').update(seed).digest();
+  const [r, g, b] = [digest[0], digest[1], digest[2]];
+  const size = 64;
+
+  // One filter byte per row, then RGB triples.
+  const rows = [];
+  for (let y = 0; y < size; y++) {
+    const row = Buffer.alloc(1 + size * 3);
+    for (let x = 0; x < size; x++) {
+      row[1 + x * 3] = r;
+      row[2 + x * 3] = g;
+      row[3 + x * 3] = b;
+    }
+    rows.push(row);
+  }
+
+  const chunk = (type, data) => {
+    const payload = Buffer.concat([Buffer.from(type), data]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(payload) >>> 0);
+    return Buffer.concat([length, payload, crc]);
+  };
+
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 2;   // colour type: truecolour
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(Buffer.concat(rows))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function crc32(buf) {
+  let c = ~0;
+  for (const byte of buf) {
+    c ^= byte;
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return ~c;
 }
 
 // Checked after task assignment; see where it is set.
