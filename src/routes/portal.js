@@ -290,14 +290,16 @@ function editability(ctx, submission) {
     ? ctx.db.prepare('SELECT * FROM form WHERE id = ?').get(submission.form_id)
     : null;
 
+  // Every branch carries the form, so a read-only view still knows which
+  // questions were asked and can show the answers back.
   if (['accepted', 'declined', 'withdrawn'].includes(submission.status)) {
-    return { editable: false, reason: 'This proposal has been decided, so it can no longer be edited.' };
+    return { editable: false, form, reason: 'This proposal has been decided, so it can no longer be edited.' };
   }
   if (form && isClosed(form)) {
     return {
       editable: false,
-      reason: `Editing closed when the call for speakers closed on ${form.close_at.slice(0, 10)}.`,
       form,
+      reason: `Editing closed when the call for speakers closed on ${form.close_at.slice(0, 10)}.`,
     };
   }
   return { editable: true, form };
