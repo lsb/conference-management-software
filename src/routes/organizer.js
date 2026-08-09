@@ -6,7 +6,7 @@ import { decide, notify, awaitingNotification, participantsOf, setStatus } from 
 import { outstandingTasks, runReminders } from '../core/tasks.js';
 import {
   findConflicts, unscheduledSessions, scheduledSessions, conflictsForSlot,
-  agendaByDay, agendaByRoom, localTime,
+  agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, localTime,
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
 import { sendCalendarInvite } from '../core/ics.js';
@@ -39,7 +39,7 @@ export function mountOrganizer(router) {
     'Put a session in a room at a time, refusing the move if it would clash.');
 
   router.get('/e/:event/agenda', agenda,
-    'The schedule. ?view=list|day|room|conflicts.');
+    'The schedule. ?view=list|day|week|track|room|conflicts.');
 
   router.get('/e/:event/speakers', speakers,
     'Everyone speaking, with what they still owe.');
@@ -501,6 +501,15 @@ function portalUrl(ctx, event, person) {
 
 // --- agenda ----------------------------------------------------------------
 
+const VIEW_LABELS = {
+  list: 'List',
+  day: 'By day',
+  week: 'Grid',
+  track: 'By track',
+  room: 'By room',
+  conflicts: 'Conflicts',
+};
+
 function agenda(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   requireOrganizer(ctx, event);
@@ -510,7 +519,7 @@ function agenda(ctx) {
   const unscheduled = unscheduledSessions(ctx.db, event.id);
   const sessions = scheduledSessions(ctx.db, event.id);
 
-  const views = ['list', 'day', 'room', 'conflicts'];
+  const views = ['list', 'day', 'week', 'track', 'room', 'conflicts'];
   if (!views.includes(view)) {
     throw badRequest(`unknown view '${view}'`, `use one of: ${views.join(', ')}`);
   }
@@ -551,6 +560,44 @@ function agenda(ctx) {
               </tr>`)}
           </tbody>
         </table>`)}`;
+  } else if (view === 'week') {
+    const grid = agendaGrid(ctx.db, event.id, event.timezone);
+    content = grid.length === 0 ? empty('Nothing is scheduled yet.') : html`
+      ${grid.map(({ day, rooms: gridRooms, rows }) => html`
+        <h3>${day}</h3>
+        <div class="scroll">
+        <table>
+          <thead><tr><th>Time</th>${gridRooms.map((r) => html`<th>${r.name}</th>`)}</tr></thead>
+          <tbody>
+            ${rows.map((row) => html`
+              <tr>
+                <td><strong>${row.time}</strong></td>
+                ${row.cells.map((cell) => html`
+                  <td>${cell
+                    ? html`<a href="/e/${event.slug}/submissions/${cell.code}">${cell.title}</a>
+                           <br><span class="muted">${cell.code}</span>`
+                    : html`<span class="muted">-</span>`}</td>`)}
+              </tr>`)}
+          </tbody>
+        </table>
+        </div>`)}`;
+  } else if (view === 'track') {
+    const byTrack = agendaByTrack(ctx.db, event.id);
+    content = html`${byTrack.map(({ track, sessions: trackSessions }) => html`
+      <h3>${track.name}</h3>
+      ${trackSessions.length === 0 ? empty('Nothing scheduled on this track yet.') : html`
+        <table>
+          <thead><tr><th>When</th><th>Room</th><th>Code</th><th>Title</th></tr></thead>
+          <tbody>
+            ${trackSessions.map((s) => html`
+              <tr>
+                <td>${when(s.starts_at, event.timezone)}</td>
+                <td>${s.room_name ?? html`<span class="muted">-</span>`}</td>
+                <td><a href="/e/${event.slug}/submissions/${s.code}"><code>${s.code}</code></a></td>
+                <td>${s.title}</td>
+              </tr>`)}
+          </tbody>
+        </table>`}`)}`;
   } else if (view === 'room') {
     const byRoom = agendaByRoom(ctx.db, event.id);
     content = html`${byRoom.map(({ room, sessions: roomSessions }) => html`
@@ -601,7 +648,7 @@ function agenda(ctx) {
 
       ${tabs(views.map((v) => ({
         href: `/e/${event.slug}/agenda?view=${v}`,
-        label: v === 'conflicts' ? 'Conflicts' : `By ${v}`.replace('By list', 'List'),
+        label: VIEW_LABELS[v],
         count: v === 'conflicts' ? conflicts.length : undefined,
         current: view === v,
       })))}

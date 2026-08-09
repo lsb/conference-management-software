@@ -71,6 +71,7 @@ export function organizerNav(event, current) {
     ['/speakers', 'Speakers'],
     ['/tasks', 'Tasks'],
     ['/review', 'Review'],
+    ['/mail', 'Mail'],
     ['/outbox', 'Outbox'],
   ];
   return html`

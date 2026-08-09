@@ -184,6 +184,58 @@ export function agendaByDay(db, eventId, timezone = 'UTC') {
     .map(([day, sessions]) => ({ day, sessions }));
 }
 
+/**
+ * Sessions grouped by track, for the track view.
+ *
+ * Tracks with nothing in them are still listed: an empty track is usually a
+ * programming gap somebody wants to see, not noise to hide.
+ */
+export function agendaByTrack(db, eventId) {
+  const tracks = db.prepare('SELECT * FROM track WHERE event_id = ? ORDER BY sort_order, name')
+    .all(eventId);
+  const sessions = scheduledSessions(db, eventId);
+
+  const grouped = tracks.map((track) => ({
+    track,
+    sessions: sessions.filter((s) => s.track_id === track.id),
+  }));
+
+  const untracked = sessions.filter((s) => !s.track_id);
+  if (untracked.length > 0) {
+    grouped.push({ track: { name: 'No track', slug: '' }, sessions: untracked });
+  }
+  return grouped;
+}
+
+/**
+ * A grid of days across rooms, which is what "week view" means for a conference
+ * that runs three days rather than seven. Rows are time slots in the event's own
+ * timezone; columns are rooms.
+ */
+export function agendaGrid(db, eventId, timezone = 'UTC') {
+  const sessions = scheduledSessions(db, eventId);
+  const rooms = db.prepare('SELECT * FROM room WHERE event_id = ? ORDER BY sort_order, name')
+    .all(eventId);
+
+  const days = [...new Set(sessions.map((s) => localDay(s.starts_at, timezone)))].sort();
+
+  return days.map((day) => {
+    const daySessions = sessions.filter((s) => localDay(s.starts_at, timezone) === day);
+    const starts = [...new Set(daySessions.map((s) => s.starts_at))].sort();
+
+    return {
+      day,
+      rooms,
+      rows: starts.map((startsAt) => ({
+        startsAt,
+        time: localTime(startsAt, timezone),
+        cells: rooms.map((room) =>
+          daySessions.find((s) => s.starts_at === startsAt && s.room_id === room.id) ?? null),
+      })),
+    };
+  });
+}
+
 /** Sessions grouped by room, for the rooms view. */
 export function agendaByRoom(db, eventId) {
   const rooms = db.prepare('SELECT * FROM room WHERE event_id = ? ORDER BY sort_order, name')

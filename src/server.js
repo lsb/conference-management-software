@@ -18,6 +18,7 @@ import { mountPublic } from './routes/public.js';
 import { mountOrganizer } from './routes/organizer.js';
 import { mountPortal } from './routes/portal.js';
 import { mountReviewer } from './routes/reviewer.js';
+import { mountMail } from './routes/mail.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -28,6 +29,7 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   mountOrganizer(router);
   mountPortal(router);
   mountReviewer(router);
+  mountMail(router);
   mountApi(router);
   mountMeta(router);
 
