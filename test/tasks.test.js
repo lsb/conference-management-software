@@ -137,3 +137,44 @@ test('re-assigning tasks after a retried notification does not duplicate them', 
   assert.equal(assignTasksOnAccept(db, sub.id), 0, 'second pass creates nothing');
   assert.equal(db.prepare('SELECT count(*) AS n FROM task_instance').get().n, before);
 });
+
+test('a retried notification does not duplicate a person-level task either', () => {
+  // The session-level case above passes on the table's plain UNIQUE constraint.
+  // The person-level case has a NULL submission_id, and NULLs do not compare
+  // equal in a unique index, so it needs its own partial index to be safe.
+  const { db, event, sub, person } = acceptedSpeakerWithTask();
+  addTaskDefinition(db, event.id, { slug: 'headshot', title: 'Headshot',
+    appliesTo: 'person', requirement: 'file', dueAt: DUE });
+  assignTasksOnAccept(db, sub.id);
+
+  assignTasksOnAccept(db, sub.id);
+  assignTasksOnAccept(db, sub.id);
+
+  const headshots = db.prepare(
+    `SELECT count(*) AS n FROM task_instance ti JOIN task_definition td ON td.id = ti.definition_id
+      WHERE td.slug = 'headshot' AND ti.person_id = ?`,
+  ).get(person.id).n;
+  assert.equal(headshots, 1);
+});
+
+test('a speaker with two accepted sessions still owes one headshot', () => {
+  const { db, event, person } = acceptedSpeakerWithTask();
+  addTaskDefinition(db, event.id, { slug: 'headshot', title: 'Headshot',
+    appliesTo: 'person', requirement: 'file', dueAt: DUE });
+
+  // Same human, a second accepted talk. Personal obligations must not multiply
+  // with sessions, or the outstanding-work dashboard overstates reality.
+  const second = createSubmission(db, { eventId: event.id, title: 'Second talk', status: 'pending' });
+  addSpeaker(db, second.id, person.id, { primary: true });
+  decide(db, [second.id], 'accept');
+  notify(db, [second.id]);
+
+  const byTask = Object.fromEntries(db.prepare(
+    `SELECT td.slug, count(*) AS n FROM task_instance ti
+       JOIN task_definition td ON td.id = ti.definition_id
+      WHERE ti.person_id = ? GROUP BY td.slug`,
+  ).all(person.id).map((r) => [r.slug, r.n]));
+
+  assert.deepEqual(byTask, { headshot: 1, 'upload-slides': 2 },
+    'one headshot for the person, one slide upload per session');
+});

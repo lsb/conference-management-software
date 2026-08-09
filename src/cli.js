@@ -102,7 +102,7 @@ const COMMANDS = {
     console.log(`${event.name}  (${event.slug})`);
     console.log(`  ${summary.awaiting_decision} awaiting a decision`);
     console.log(`  ${summary.awaiting_notification} decided but not yet told`);
-    console.log(`  ${summary.unscheduled} accepted without a time slot`);
+    console.log(`  ${summary.unscheduled} without a time slot`);
     console.log(`  ${summary.conflicts} scheduling conflicts`);
     console.log(`  ${summary.outstanding_tasks} outstanding speaker tasks`);
     return 0;
@@ -215,7 +215,7 @@ const COMMANDS = {
     output(args, rows, 'Nothing is scheduled yet.');
     const missing = unscheduledSessions(db, event.id);
     if (missing.length > 0) {
-      console.log(`\n${missing.length} accepted session(s) still need a slot: `
+      console.log(`\n${missing.length} session(s) still need a slot: `
         + missing.map((s) => s.code).join(', '));
     }
     return 0;

@@ -80,6 +80,39 @@ function isClosed(form) {
   return Boolean(form.close_at && form.close_at < now());
 }
 
+/**
+ * Collect answers keyed by what they map onto, e.g. `person.first_name`.
+ *
+ * A field's slug is the organizer's label for it and can be anything --
+ * `first-name`, `your_name`, `speaker_first`. Only `maps_to` says where the
+ * answer belongs, so that is what the handler reads.
+ *
+ * The last segment of `maps_to` is accepted as an alias, so an API client or a
+ * script can post the obvious `first_name` without first fetching the form
+ * definition to learn what this particular organizer called it.
+ */
+function mappedValues(fields, formFields) {
+  const out = {};
+  for (const field of formFields) {
+    if (!field.maps_to) continue;
+    const value = valueOf(fields, field);
+    if (value !== '') out[field.maps_to] = value;
+  }
+  return out;
+}
+
+/** One field's answer, accepting either its slug or its `maps_to` alias. */
+function valueOf(fields, field) {
+  const alias = field.maps_to ? field.maps_to.split('.').pop() : null;
+  return fields.get(field.slug) || (alias ? fields.get(alias) : '');
+}
+
+/** The names a caller may use for a field, for error messages. */
+function acceptedNames(field) {
+  const alias = field.maps_to ? field.maps_to.split('.').pop() : null;
+  return alias && alias !== field.slug ? `'${field.slug}' (or '${alias}')` : `'${field.slug}'`;
+}
+
 function cfpForm(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   const form = findForm(ctx.db, event.id, ctx.params.form);
@@ -182,32 +215,42 @@ function postCfp(ctx) {
   const participantFields = fieldsOf(ctx.db, form.id, 'participant');
 
   for (const field of [...abstractFields, ...participantFields]) {
-    if (field.required && ctx.fields.get(field.slug) === '') {
+    const value = valueOf(ctx.fields, field);
+    if (field.required && value === '') {
       throw badRequest(`missing required field: ${field.label}`,
-        `send '${field.slug}' in the request body`);
+        `send ${acceptedNames(field)} in the request body`);
     }
-    const max = field.max_chars;
-    if (max && ctx.fields.get(field.slug).length > max) {
-      throw badRequest(`${field.label} is longer than ${max} characters`,
-        `it was ${ctx.fields.get(field.slug).length}`);
+    if (field.max_chars && value.length > field.max_chars) {
+      throw badRequest(`${field.label} is longer than ${field.max_chars} characters`,
+        `it was ${value.length}`);
     }
   }
 
-  const email = ctx.fields.require('email', 'we need an address to send your confirmation to');
+  // Read values through the form's own `maps_to` definitions rather than by
+  // guessing at names. An organizer who renames a field, or whose field slug is
+  // `first-name` where this code would have said `first_name`, must not silently
+  // lose the answer.
+  const mapped = mappedValues(ctx.fields, [...abstractFields, ...participantFields]);
+
+  const email = mapped['person.email']
+    ?? ctx.fields.require('email', 'we need an address to send your confirmation to');
 
   // One person row per human, matched on email, reused across every event. This
   // is what makes a returning speaker a returning speaker rather than a stranger.
   let person = ctx.db.prepare('SELECT * FROM person WHERE email = ? COLLATE NOCASE').get(email);
   const t = now();
+  const first = mapped['person.first_name'] ?? '';
+  const last = mapped['person.last_name'] ?? '';
+  const phone = mapped['person.phone'] ?? '';
+  const biography = mapped['person.biography'] ?? '';
+
   if (!person) {
-    const first = ctx.fields.get('first_name');
-    const last = ctx.fields.get('last_name');
-    const slug = uniqueSlug(`${first} ${last}` || email.split('@')[0],
+    const slug = uniqueSlug(`${first} ${last}`.trim() || email.split('@')[0],
       (s) => ctx.db.prepare('SELECT 1 FROM person WHERE slug = ?').get(s));
     person = ctx.db.prepare(
       `INSERT INTO person (slug, email, first_name, last_name, phone, biography, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
-    ).get(slug, email, first, last, ctx.fields.get('phone'), ctx.fields.get('biography'), t, t);
+    ).get(slug, email, first, last, phone, biography, t, t);
   } else {
     // Fill in blanks from the new submission, but never overwrite what the person
     // has already curated about themselves in their portal.
@@ -219,8 +262,7 @@ function postCfp(ctx) {
          biography  = CASE WHEN biography  = '' THEN ? ELSE biography  END,
          updated_at = ?
        WHERE id = ?`,
-    ).run(ctx.fields.get('first_name'), ctx.fields.get('last_name'),
-      ctx.fields.get('phone'), ctx.fields.get('biography'), t, person.id);
+    ).run(first, last, phone, biography, t, person.id);
   }
 
   if (form.submission_limit) {
@@ -234,7 +276,7 @@ function postCfp(ctx) {
     }
   }
 
-  const trackSlug = ctx.fields.get('track');
+  const trackSlug = mapped['submission.track_id'] ?? ctx.fields.get('track');
   const track = trackSlug
     ? ctx.db.prepare('SELECT * FROM track WHERE event_id = ? AND slug = ?').get(event.id, trackSlug)
     : null;
@@ -243,8 +285,8 @@ function postCfp(ctx) {
     eventId: event.id,
     formId: form.id,
     submittedByPersonId: person.id,
-    title: ctx.fields.require('title'),
-    description: ctx.fields.get('description'),
+    title: mapped['submission.title'] ?? ctx.fields.require('title'),
+    description: mapped['submission.description'] ?? ctx.fields.get('description'),
     trackId: track?.id ?? null,
     status: 'draft',
   });
@@ -256,7 +298,7 @@ function postCfp(ctx) {
   ).run(submission.id, person.id);
 
   for (const [kind, column] of [['format', 'format_option_id'], ['level', 'level_option_id'], ['language', 'language_option_id']]) {
-    const slug = ctx.fields.get(kind);
+    const slug = mapped[`submission.${column}`] ?? ctx.fields.get(kind);
     if (!slug) continue;
     const option = ctx.db.prepare(
       'SELECT id FROM taxonomy_option WHERE event_id = ? AND kind = ? AND slug = ?',

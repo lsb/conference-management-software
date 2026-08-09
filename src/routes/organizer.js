@@ -93,7 +93,9 @@ function dashboard(ctx) {
       href: `/e/${event.slug}/notify`, action: 'Send decisions' });
   }
   if (unscheduled.length > 0) {
-    alerts.push({ level: '', text: `${unscheduled.length} accepted session${unscheduled.length === 1 ? '' : 's'} still need a time slot`,
+    // Counts sessions still in the accept queue as well as announced ones,
+    // because organizers build the grid before they send the acceptances.
+    alerts.push({ level: '', text: `${unscheduled.length} session${unscheduled.length === 1 ? '' : 's'} still need a time slot`,
       href: `/e/${event.slug}/agenda?view=list`, action: 'Schedule them' });
   }
   const errors = conflicts.filter((c) => c.severity === 'error');

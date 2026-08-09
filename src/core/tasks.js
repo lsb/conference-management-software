@@ -10,9 +10,12 @@ import { queueEmail, getTemplate } from './mail.js';
 /**
  * Create task instances for a submission that has just been accepted.
  *
- * Returns how many instances were created. Safe to call twice: the unique index
- * on (definition, person, submission) means re-running is a no-op, so a retried
- * notification never doubles someone's to-do list.
+ * Returns how many instances were created. Safe to call twice, and safe to call
+ * for a second session by the same speaker: two unique indexes cover the two
+ * shapes of task, so a retried notification never doubles anyone's to-do list
+ * and a speaker with three accepted talks still owes exactly one headshot.
+ * (The person-level case needs its own partial index -- see migration 003 --
+ * because a NULL submission_id does not compare equal to another NULL.)
  *
  * Two shapes of task, assigned differently:
  *
