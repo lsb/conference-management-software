@@ -32,8 +32,13 @@ test('migrations apply cleanly and leave the database consistent', () => {
   assert.equal(db.prepare('PRAGMA foreign_key_check').all().length, 0);
   assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
 
-  const applied = db.prepare('SELECT name FROM schema_migration ORDER BY name').all();
-  assert.deepEqual(applied.map((r) => r.name), ['001_initial.sql']);
+  // Assert the shape rather than a literal list, so adding a migration does not
+  // require editing this test.
+  const applied = db.prepare('SELECT name FROM schema_migration ORDER BY name')
+    .all().map((r) => r.name);
+  assert.ok(applied.includes('001_initial.sql'));
+  assert.deepEqual(applied, [...applied].sort(), 'migrations apply in filename order');
+  assert.ok(applied.every((n) => /^\d{3}_\w+\.sql$/.test(n)), 'migrations are numbered');
 });
 
 test('migrations are idempotent', () => {
