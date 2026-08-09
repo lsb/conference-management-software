@@ -113,6 +113,56 @@ invitation ("cloning the exact design is not a requirement"):
   otherwise. A login form in front of a SQLite file you can already read protects
   nothing and taxes every demo, script, and eval run.
 
+## 2026-08-09 — Reading the evaluator
+
+We got hold of the evaluation kit that will judge this. It reshaped the plan
+more than anything since the screenshots.
+
+**The evaluator is a browser and nothing else.** A Claude-driven Playwright
+agent with thirteen tools — navigate, click, fill, select, drag, upload, press,
+scroll, wait, snapshot, screenshot, observe, done. No HTTP client. No shell. No
+access to the repository. A separate judge then scores from screenshots and the
+agent's written observations.
+
+So **our JSON API and our CLI score zero.** That was a genuinely uncomfortable
+thing to read, having built both carefully. They stay, because they are how the
+local-model eval drives the app and because they are good, but they stopped
+counting as feature coverage. Anything that can only be done with `curl` does not
+exist as far as this is concerned.
+
+**The architecture held up, though.** Server-rendered HTML with real forms is
+close to the best possible shape for this harness. Its `select` tool needs an
+actual `<select>`. Its `upload` tool needs an actual `<input type=file>`. It
+takes an automatic screenshot every time the URL changes — and its authors note
+drily that "models under-screenshot in practice" — so a full-page-load app
+generates far more evidence for the judge than a single-page app would. The
+choices we made to be legible to a 12B model turn out to be the same ones that
+survive an automated evaluator. That is not luck: both reward an app that says
+what it is doing in the markup.
+
+**Two pieces of previously invisible work became visible.** An in-app outbox is
+explicitly accepted in place of real email delivery, which is exactly what we
+built in D5 for entirely different reasons. And the rubric awards credit for
+embed outputs in JSON, XML, and iCalendar — so the API becomes a *feature* the
+moment an organizer can pick a format in a UI.
+
+**The uncomfortable finding.** A `127.0.0.1` deployment is unevaluable. Not
+penalised — unscored. And there is a coverage floor below which the result is
+withheld rather than reported. Local-first is still right for development and for
+owning your data, but public reachability stopped being a later step and became a
+requirement (D11).
+
+**What we changed the same day.** Public surfaces — sessions, speakers, agenda
+grid, itinerary, gallery — all anonymous, all no-script. Real file uploads with
+content-addressed storage and magic-byte checking. Speaker-side draft, resume,
+edit, and withdraw, with editing locking when the call closes. Job title and
+company on people, because "Priya Raman, Principal Engineer, Latticework Systems"
+is what a session card is supposed to say and prose cannot be asked for that.
+
+Two techniques carried the no-script rule further than expected: `<details>` for
+show-more, and a cookie written by a form POST for the attendee's personal
+schedule, which survives a full reload with no account at all.
+
 ## Open questions
 
 - Which direction the registration-platform integration should run. "One-way" is

@@ -115,6 +115,76 @@ forcing function: legible URLs, honest errors, one obvious way to do each thing.
 
 ---
 
+## D9 — The evaluator is a browser, so the browser is the product surface
+
+**What we learned.** The independent evaluation drives a headless Chromium
+through a scripted agent whose entire toolset is navigate, click, fill, select,
+drag, upload, press, scroll, screenshot, and observe. There is no HTTP client, no
+shell, and no access to the repository. A separate judge scores from screenshots
+and the agent's notes.
+
+**Decision.** Every capability must be reachable and demonstrable through
+clickable HTML. The JSON API and the CLI stay — they are genuinely useful, they
+are how the local-model eval drives the app, and they cost us nothing to keep —
+but we stop treating them as coverage for a feature. If a thing can only be done
+with `curl`, it does not exist.
+
+**Why this is less painful than it sounds.** Server-rendered HTML with real
+forms turns out to be close to the best possible shape for this harness: real
+`<select>` elements (its select tool requires them), real `<input type=file>`,
+and a URL that changes on every action, which is what triggers its automatic
+evidence screenshots. A single-page app would have been actively worse. The
+architecture we chose for legibility to a small model is the same architecture
+that survives contact with an automated evaluator, which is not a coincidence —
+both reward the same honesty.
+
+**Two conversions we take deliberately.** An in-app outbox is explicitly accepted
+in place of real email delivery, which vindicates D5. And exposing the API as
+selectable *embed output formats* — JSON, XML, iCalendar — turns invisible work
+into a visible feature.
+
+---
+
+## D10 — No JavaScript, and the two techniques that make that hold
+
+**Decision.** The public surfaces use no script at all. Where interactivity is
+genuinely needed, use the platform:
+
+- `<details>`/`<summary>` for show-more disclosure. Native, keyboard accessible,
+  and legible to anything driving the page.
+- A cookie written by an ordinary form POST for the attendee's personal
+  schedule. It survives a full reload with no account and no script.
+
+**Why.** Every JavaScript-dependent interaction is a thing that can fail under a
+10-second timeout, in a screen reader, or under an agent that only sees the
+accessibility tree. The two hard cases turned out to have plain-HTML answers, so
+the cost of the rule is close to zero.
+
+**Where this bends.** Drag-and-drop scheduling cannot be done without script.
+That stays progressive enhancement over a working forms-based scheduler
+(see D4), which is also what keeps it operable by keyboard.
+
+---
+
+## D11 — Public reachability is now an existential requirement
+
+**Decision.** Local-first remains right for development and for owning your data,
+but the app must also run behind a single public origin, and we should treat that
+deployment as a first-class artifact rather than an afterthought.
+
+**Why.** The evaluator is handed one URL and calls `page.goto()`. There is no
+build step, no clone, nothing that could start a local server. A loopback-only
+deployment does not score badly; it scores nothing, and below 60% coverage the
+result is withheld entirely rather than reported.
+
+**Consequences to respect.** One origin — no `www`/apex split, no separate host
+for public pages, and no OAuth, because an off-origin redirect is rolled back by
+the harness. Persistent disk for the SQLite file, because state has to survive a
+whole run. No cold start longer than 30 seconds. No rate limiting that trips on a
+burst of requests from one browser.
+
+---
+
 ## D8 — Vendor naming
 
 **Decision.** The incumbent product is not named anywhere in this repository.
