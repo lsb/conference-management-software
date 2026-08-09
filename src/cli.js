@@ -6,7 +6,7 @@
 // Output is a readable table by default and JSON with --json, because the two
 // audiences are a person squinting at a terminal and something parsing it.
 
-import { openDatabase, DEFAULT_DB_PATH } from './db.js';
+import { openDatabase, DEFAULT_DB_PATH, now, uniqueSlug } from './db.js';
 import { decide, notify, awaitingNotification, participantsOf } from './core/submissions.js';
 import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
 import {
@@ -15,6 +15,7 @@ import {
 } from './core/schedule.js';
 import { readStoredFile } from './core/files.js';
 import { buildZip } from './core/zip.js';
+import { FEEDS, FORMATS, showsPeople } from './core/feeds.js';
 import { writeFileSync } from 'node:fs';
 import { createMagicLink } from './core/auth.js';
 import { queueEmail } from './core/mail.js';
@@ -48,6 +49,8 @@ Usage:
   conf autoschedule <event>              place everything that has no slot yet
   conf files <event> [--task SLUG]       what speakers have uploaded
               [--zip PATH] [--group speaker|session|flat]
+  conf embeds <event>                    feeds of your programme for your own site
+              [--create "Name" --feed F --format FMT]
   conf conflicts <event>                 clashes in the schedule
   conf speakers <event>                  accepted speakers and what they owe
   conf reviews <event>                   per reviewer: submitted and still to do
@@ -115,6 +118,7 @@ const COMMAND_FLAGS = {
   schedule: ['room', 'at', 'minutes'],
   autoschedule: [],
   files: ['task', 'zip', 'group'],
+  embeds: ['create', 'feed', 'format', 'track'],
   show: [],
   accept: [],
   decline: [],
@@ -202,11 +206,16 @@ const COMMANDS = {
     if (args.json) return output(args, summary);
 
     console.log(`${event.name}  (${event.slug})`);
-    console.log(`  ${summary.awaiting_decision} awaiting a decision`);
-    console.log(`  ${summary.awaiting_notification} decided but not yet told`);
-    console.log(`  ${summary.unscheduled} without a time slot`);
-    console.log(`  ${summary.conflicts} scheduling conflicts`);
-    console.log(`  ${summary.outstanding_tasks} outstanding speaker tasks`);
+    console.log(`  ${summary.awaiting_decision} awaiting a decision`
+      + (summary.awaiting_decision > 0 ? `  ->  conf submissions ${event.slug} --status pending` : ''));
+    console.log(`  ${summary.awaiting_notification} decided but not yet told`
+      + (summary.awaiting_notification > 0 ? `  ->  conf notify ${event.slug} --all --dry-run` : ''));
+    console.log(`  ${summary.unscheduled} without a time slot`
+      + (summary.unscheduled > 0 ? `  ->  conf autoschedule ${event.slug}` : ''));
+    console.log(`  ${summary.conflicts} scheduling conflicts`
+      + (summary.conflicts > 0 ? `  ->  conf conflicts ${event.slug}` : ''));
+    console.log(`  ${summary.outstanding_tasks} outstanding speaker tasks`
+      + (summary.outstanding_tasks > 0 ? `  ->  conf tasks ${event.slug}` : ''));
     return 0;
   },
 
@@ -365,6 +374,9 @@ const COMMANDS = {
     if (missing.length > 0) {
       console.log(`\n${missing.length} session(s) still need a slot: `
         + missing.map((s) => s.code).join(', '));
+      console.log(`  place them all:  conf autoschedule ${event.slug}`);
+      console.log(`  or one at a time: conf schedule ${event.slug} ${missing[0].code} `
+        + '--room <slug> --at "YYYY-MM-DDTHH:MM"');
     }
     return 0;
   },
@@ -643,6 +655,77 @@ const COMMANDS = {
     writeFileSync(args.zip, buildZip(entries));
     if (args.json) return output(args, { wrote: args.zip, files: entries.length });
     console.log(`Wrote ${entries.length} file(s) to ${args.zip}.`);
+    return 0;
+  },
+
+  /**
+   * Feeds of the programme for somebody else's website.
+   *
+   * Lists them, and creates one. Creating mattered: without it the only way to
+   * get a JSON feed was the web form, and "give the website team a JSON feed"
+   * is a request that arrives by email, not by clicking.
+   */
+  embeds(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const base = 'http://127.0.0.1:8080';
+
+    if (args.create) {
+      const feed = args.feed ?? 'agenda';
+      const format = args.format ?? 'html';
+
+      if (!FEEDS.some((f) => f.value === feed)) {
+        throw withHint(new Error(`no feed called '${feed}'`),
+          `feeds are: ${FEEDS.map((f) => f.value).join(', ')}`);
+      }
+      if (!FORMATS.some((f) => f.value === format)) {
+        throw withHint(new Error(`no format called '${format}'`),
+          `formats are: ${FORMATS.map((f) => f.value).join(', ')}`);
+      }
+      if (format === 'ics' && showsPeople(feed)) {
+        throw withHint(new Error('a speaker list has nothing to put in a calendar'),
+          'choose agenda or session_list for ics, or a different format');
+      }
+
+      const track = args.track
+        ? db.prepare('SELECT id FROM track WHERE event_id = ? AND slug = ?').get(event.id, args.track)
+        : null;
+      if (args.track && !track) {
+        const known = db.prepare('SELECT slug FROM track WHERE event_id = ?').all(event.id).map((t) => t.slug);
+        throw withHint(new Error(`no track '${args.track}'`), `tracks are: ${known.join(', ')}`);
+      }
+
+      const name = String(args.create);
+      const slug = uniqueSlug(name,
+        (candidate) => Boolean(db.prepare('SELECT 1 FROM embed WHERE event_id = ? AND slug = ?')
+          .get(event.id, candidate)));
+
+      db.prepare(
+        `INSERT INTO embed (event_id, slug, name, feed, format, enabled, filter_track_id, created_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      ).run(event.id, slug, name, feed, format, track?.id ?? null, now());
+
+      const url = `${base}/embed/${event.slug}/${slug}${format === 'html' ? '' : `.${format}`}`;
+      if (args.json) return output(args, { embed: slug, feed, format, url });
+      console.log(`Created '${name}'.`);
+      console.log(`  ${url}`);
+      return 0;
+    }
+
+    const rows = db.prepare('SELECT * FROM embed WHERE event_id = ? ORDER BY created_at').all(event.id)
+      .map((e) => ({
+        embed: e.slug,
+        shows: e.feed,
+        as: e.format,
+        enabled: e.enabled ? 'yes' : 'no',
+        url: `${base}/embed/${event.slug}/${e.slug}${e.format === 'html' ? '' : `.${e.format}`}`,
+      }));
+
+    output(args, rows, 'No embeds yet.', 'embed');
+    if (!args.json && rows.length === 0) {
+      console.log(`\nMake one:  conf embeds ${event.slug} --create "Agenda" --feed agenda --format json`);
+      console.log(`  feeds:   ${FEEDS.map((f) => f.value).join(', ')}`);
+      console.log(`  formats: ${FORMATS.map((f) => f.value).join(', ')}`);
+    }
     return 0;
   },
 
