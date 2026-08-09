@@ -1,0 +1,18 @@
+{
+  "name": "conference-management-software",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A local-first conference management app. Plain Node, plain SQLite, plain HTML.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning src/server.js",
+    "migrate": "node --no-warnings=ExperimentalWarning src/migrate.js",
+    "seed": "node --no-warnings=ExperimentalWarning src/seed.js",
+    "test": "node --no-warnings=ExperimentalWarning --test test/"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

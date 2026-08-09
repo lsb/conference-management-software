@@ -1,0 +1,16 @@
+node_modules/
+*.log
+
+# Local database + its SQLite sidecars. The schema is source; the data is not.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Eval scratch output. Curated transcripts get committed under eval/transcripts/.
+eval/runs/
+.DS_Store
+
+# Source research material. Kept locally for reference, deliberately not committed:
+# it is large, and it names the incumbent vendor (see docs/DECISIONS.md, D8).
+*.pdf
+
