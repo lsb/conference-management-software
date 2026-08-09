@@ -22,6 +22,8 @@ import { mountMail } from './routes/mail.js';
 import { mountWidgets } from './routes/widgets.js';
 import { mountDemoAuth } from './routes/demo-auth.js';
 import { mountEvaluation } from './routes/evaluation.js';
+import { mountSetup } from './routes/setup.js';
+import { mountFormBuilder } from './routes/formbuilder.js';
 import { mountApi } from './routes/api.js';
 
 export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
@@ -29,6 +31,8 @@ export function createApp({ dbPath = DEFAULT_DB_PATH, db = null } = {}) {
   const router = new Router();
 
   mountPublic(router);
+  mountSetup(router);
+  mountFormBuilder(router);
   mountOrganizer(router);
   mountPortal(router);
   mountReviewer(router);

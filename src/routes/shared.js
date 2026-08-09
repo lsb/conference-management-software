@@ -62,7 +62,13 @@ export function statusCounts(db, eventId) {
   return counts;
 }
 
-/** The organizer chrome. Kept flat: seven destinations, no nested menus. */
+/**
+ * The organizer chrome.
+ *
+ * Deliberately flat. Ten destinations is more than is comfortable, but a nested
+ * menu hides half of them behind a hover, and the thing an organizer is looking
+ * for is almost never where they last left it.
+ */
 export function organizerNav(event, current) {
   const items = [
     ['', 'Dashboard'],
@@ -71,8 +77,10 @@ export function organizerNav(event, current) {
     ['/speakers', 'Speakers'],
     ['/tasks', 'Tasks'],
     ['/review', 'Review'],
+    ['/forms', 'Forms'],
     ['/mail', 'Mail'],
     ['/outbox', 'Outbox'],
+    ['/settings', 'Settings'],
   ];
   return html`
     <header class="bar">
