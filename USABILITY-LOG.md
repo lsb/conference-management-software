@@ -13,6 +13,50 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 5 — 2026-08-09, the three failures re-run after the fixes
+
+**All three pass, each on the first attempt.** Effective suite score: 10/10.
+
+| Task | Run 4 | Run 5 | Time |
+| --- | --- | --- | --- |
+| `public-session-search` | **FAIL** 3/3 | pass 1/3 | 190s |
+| `reviewer-workload` | **FAIL** 3/3 | pass 1/3 | 183s |
+| `mail-outstanding-send` | **FAIL** 3/3 | pass 1/3 | 329s |
+
+What each of them did, in full:
+
+```
+$ curl -s 'http://127.0.0.1:8080/sessions/manzanita-2026?q=retrieval'
+```
+> The session "Retrieval Is Not a Vector Database" (SESS-2) will be held on
+> 2026-10-12 from 11:00–11:45 in the Cypress Room, and it is presented by
+> Yusuf Karim.
+
+```
+$ curl -s http://127.0.0.1:8080/e/manzanita-2026/review
+```
+> Sofia Marchetti
+
+```
+$ curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/mail ...
+```
+
+The send task is the one worth dwelling on. Its checker scores both directions:
+every person the audience resolver says owes something must appear in the
+outbox, **and** nobody else may. In Run 4 the model announced four decisions to
+the wrong people and missed five of the seven it was asked to reach. In Run 5 it
+posted to the bulk-mail endpoint and hit exactly the seven.
+
+**The unexpected finding: documentation did as much work as code.** Two of the
+three went straight to `curl` against the HTTP surfaces, not to the new CLI
+commands, because the "Three questions the command line cannot answer" section
+added to `AGENTS.md` told them where to look. The commands matter — `conf
+reviews`, `conf mail`, `conf sessions` all exist now and all answer correctly —
+but on this run the pointer was what got used. Both were worth adding; only one
+of them was expensive.
+
+---
+
 ## Run 4 — 2026-08-09, five new tasks over the surfaces added since Run 3
 
 **pass@3: 7/10. Target missed.** Three of the five new tasks failed every

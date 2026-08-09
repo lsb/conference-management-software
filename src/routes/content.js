@@ -8,7 +8,8 @@ import {
   versionsOf, commentsOn, addComment, setContentStatus, revisionsOf,
   restoreRevision, snapshot, CONTENT_STATUSES,
 } from '../core/content.js';
-import { isImage } from '../core/files.js';
+import { isImage, readStoredFile } from '../core/files.js';
+import { buildZip } from '../core/zip.js';
 import {
   findEvent, findSubmission, requireOrganizer, organizerNav, empty, tabs, fullName, dateOnly,
 } from './shared.js';
@@ -27,6 +28,85 @@ export function mountContent(router) {
     'Edit a session\'s title and description, keeping the previous version.');
   router.post('/e/:event/submissions/:code/restore/:revision', postRestore,
     'Put a session\'s content back to an earlier version.');
+
+  router.get('/e/:event/files.zip', filesZip,
+    'Every current deliverable in one archive. ?group=speaker|session|flat, ?task=slug to narrow.');
+}
+
+/**
+ * Every current deliverable, in one archive.
+ *
+ * Only current versions: an AV team wants the deck that is going on screen, not
+ * a folder containing four attempts at it. Grouping is a real choice, because
+ * "all the slides" and "everything from this speaker" are different jobs.
+ */
+function filesZip(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  const grouping = ctx.query.get('group') ?? 'speaker';
+  if (!['speaker', 'session', 'flat'].includes(grouping)) {
+    throw badRequest(`unknown grouping '${grouping}'`, 'use group=speaker, group=session, or group=flat');
+  }
+
+  const taskSlug = ctx.query.get('task');
+  if (taskSlug) {
+    const known = ctx.db.prepare('SELECT slug FROM task_definition WHERE event_id = ?')
+      .all(event.id).map((t) => t.slug);
+    if (!known.includes(taskSlug)) {
+      throw badRequest(`no task called '${taskSlug}' at this event`,
+        known.length ? `tasks are: ${known.join(', ')}` : 'this event has no tasks');
+    }
+  }
+
+  const rows = ctx.db.prepare(
+    `SELECT f.slug, f.filename, f.created_at,
+            p.first_name, p.last_name,
+            s.code AS submission_code, s.title AS submission_title,
+            td.slug AS task_slug, td.title AS task_title
+       FROM file f
+       LEFT JOIN person p ON p.id = f.uploaded_by_person_id
+       LEFT JOIN task_instance ti ON ti.file_id = f.id
+       LEFT JOIN task_definition td ON td.id = ti.definition_id
+       LEFT JOIN submission s ON s.id = ti.submission_id
+      WHERE f.event_id = ? AND f.superseded_at IS NULL
+        AND (? IS NULL OR td.slug = ?)
+      ORDER BY p.last_name, f.created_at`,
+  ).all(event.id, taskSlug ?? null, taskSlug ?? null);
+
+  const files = [];
+  for (const row of rows) {
+    const stored = readStoredFile(ctx.db, row.slug);
+    if (!stored) continue;   // a row whose bytes are gone is skipped, not fatal
+
+    const who = `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || 'unknown';
+    const folder = grouping === 'speaker' ? who
+      : grouping === 'session' ? (row.submission_code ?? 'no session')
+        : '';
+
+    files.push({
+      name: folder ? `${folder}/${row.filename}` : row.filename,
+      data: stored.data,
+      date: row.created_at,
+    });
+  }
+
+  if (files.length === 0) {
+    throw badRequest('there are no files to download',
+      taskSlug ? `nobody has uploaded anything for '${taskSlug}' yet`
+        : `uploads appear at /e/${event.slug}/files`);
+  }
+
+  const archive = buildZip(files);
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'application/zip',
+      'content-length': String(archive.length),
+      'content-disposition': `attachment; filename="${event.slug}-files.zip"`,
+    },
+    body: archive,
+  };
 }
 
 // --- the library -----------------------------------------------------------
@@ -62,6 +142,26 @@ function fileLibrary(ctx) {
         stay reachable from each file.</p>
 
       ${files.length === 0 ? empty('Nothing has been uploaded yet.') : html`
+        <form method="get" action="/e/${event.slug}/files.zip" class="row" style="margin-bottom:1.25rem">
+          <div>
+            <label for="group">Download everything, in folders by</label>
+            <select id="group" name="group">
+              <option value="speaker">Speaker</option>
+              <option value="session">Session</option>
+              <option value="flat">No folders</option>
+            </select>
+          </div>
+          <div>
+            <label for="task">Only one deliverable <small>optional</small></label>
+            <select id="task" name="task">
+              <option value="">Everything</option>
+              ${ctx.db.prepare('SELECT slug, title FROM task_definition WHERE event_id = ? ORDER BY sort_order')
+                .all(event.id).map((t) => html`<option value="${t.slug}">${t.title}</option>`)}
+            </select>
+          </div>
+          <div style="flex:0 0 auto"><button type="submit">Download archive</button></div>
+        </form>
+
         <div class="scroll">
         <table>
           <thead><tr><th>File</th><th>For</th><th>From</th><th>Uploaded</th>
