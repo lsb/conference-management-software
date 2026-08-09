@@ -19,6 +19,92 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 8 — 2026-08-09, the Run 7 failures, fixed one at a time
+
+**All five now pass. The suite is 15/15 at 3 of 5.**
+
+| Task | Run 7 | then | then | then | Run 8 |
+| --- | --- | --- | --- | --- | --- |
+| `publish-approved-panel` | 0/3 | **3/4** | | | pass |
+| `slides-archive` | 0/3 | **3/3** | | | pass |
+| `fill-empty-slots` | 0/3 | 1/4 | 2/5 | **3/5** | pass |
+| `embed-json-feed` | 0/3 | 0/3 | 1/4 | 0/3 | **3/3** |
+| `returning-speaker` | 3/4 | | | | pass |
+
+Four rounds on the last two. Each round the trace named one specific thing, we
+fixed that thing, and the number moved. That is the whole method: the score is
+not the point, the diagnosis is.
+
+### What each round actually changed
+
+**`publish-approved-panel`** needed the database to refuse `published = 1` on
+unapproved content and say why. Nothing else. 0/3 to 3/4 in one change.
+
+**`slides-archive`** needed `conf files --zip` to exist. 0/3 to 3/3.
+
+**`fill-empty-slots`** took three rounds because we kept fixing the wrong
+surface. First we added `conf autoschedule` — no effect, because the model never
+ran `--help`. Then `conf status` named the command beside the count — it passed
+whenever it happened to run `conf status`, and timed out when it started from
+`conf submissions`, which listed accepted talks and said nothing about whether
+they had a room and a time. Adding a slot column there finished it.
+
+**`embed-json-feed`** is the one worth writing down, because we made it worse.
+
+### We caused a regression, and the eval caught it
+
+It went 1/4, then **0/3**. The cause was the previous commit. Cleaning a stale
+inventory out of AGENTS.md, we deleted the concrete curl for creating an embed
+along with it.
+
+That was over-applying a rule we had just written. An inventory of commands goes
+stale and should not be hand-maintained. A *recipe for a job* does not — "a JSON
+feed means creating an embed with `format=json`" is a fact about the design, and
+the same commit that removed it argued that facts about the design are exactly
+what belongs in a hand-written file.
+
+Underneath that, two real faults:
+
+```
+$ ./bin/conf embeds manzanita-2026
+EMBED            SHOWS            AS    ENABLED  URL
+public-agenda    agenda           html  yes      .../public-agenda
+speaker-gallery  speaker_gallery  html  yes      .../speaker-gallery
+
+2 embeds.
+```
+
+`conf embeds` taught the create syntax **only when the list was empty**. The seed
+ships two embeds. Somebody asked for a JSON feed runs the command, sees two HTML
+embeds, and is told nothing about how to make a third. The one hint that mattered
+was behind the one condition that never held.
+
+And attempt 2 typed `conf embed`, singular, and got "unknown command, run
+--help". Getting a name nearly right and being sent to a help page is a small
+cruelty when the answer is one letter away. Unknown commands now suggest the
+closest match.
+
+With both fixed: 3 attempts, 3 passes, 164 to 208 seconds each.
+
+### The rule, stated for the fifth time
+
+Every fix in Runs 6, 7 and 8 has been the same shape. Not "add a feature" —
+every one of these features already existed and worked. **Say the answer where
+the question is asked.**
+
+- `--task`, so "who owes a headshot" is a filter and not a scan.
+- The count on every list, so nobody pipes a table to `wc -l` and counts the
+  header.
+- The next command beside each problem in `conf status`.
+- The slot column in `conf submissions`, where somebody asking about scheduling
+  actually looks.
+- Recipes at the top of `llms.txt` rather than under 200 lines of route dump.
+- The create syntax on a populated list, not only an empty one.
+
+Five runs, one lesson. Every one of those would have caught out a tired human at
+eleven at night, which is the whole reason a 12B model on a CPU is worth the
+electricity.
+
 ## Run 7 — 2026-08-09, five new tasks over the last five features
 
 **1/5. Target badly missed.** Four of the five failed every attempt. Eight of
