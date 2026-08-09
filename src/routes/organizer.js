@@ -843,6 +843,13 @@ function postSchedule(ctx) {
       'pick a different room or time, or move the other session first');
   }
 
+  // The database refuses this too, but a form should answer for itself rather
+  // than letting a trigger do the talking.
+  if (ctx.fields.bool('published') && submission.content_status !== 'approved') {
+    throw badRequest('this session cannot go on the public agenda yet: its content is not approved',
+      'approve it in the Content section below, then publish');
+  }
+
   const moved = submission.starts_at !== startsAt
     || submission.ends_at !== endsAt
     || submission.room_id !== (room?.id ?? null);

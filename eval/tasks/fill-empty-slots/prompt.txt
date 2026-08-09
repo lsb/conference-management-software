@@ -1,0 +1,1 @@
+This directory contains a conference management app. Some of the talks we have accepted for Manzanita 2026 still have no room and no time. Get every one of them into the schedule, without putting anything on top of anything else, so we can look at a complete draft.

@@ -1,0 +1,1 @@
+This directory contains a conference management app. We are drawing up the invitation list and want to make a fuss of anyone who keeps coming back. Who has had a talk accepted at both Manzanita 2025 and Manzanita 2026? Answer with just the names.

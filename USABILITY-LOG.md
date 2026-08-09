@@ -19,6 +19,242 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 7 — 2026-08-09, five new tasks over the last five features
+
+**1/5. Target badly missed.** Four of the five failed every attempt. Eight of
+those twelve attempts ended in a 420-second timeout rather than a wrong answer,
+and six of them returned an empty string: the model did not get the task wrong,
+it ran out of time looking for a command that does not exist.
+
+| Task | Result | Succeeded | Attempts run | Time |
+| --- | --- | --- | --- | --- |
+| `embed-json-feed` | **FAIL** | 0/3 | 3 | 970s |
+| `fill-empty-slots` | **FAIL** | 0/3 | 3 | 1260s |
+| `publish-approved-panel` | **FAIL** | 0/3 | 3 | 1146s |
+| `returning-speaker` | pass | 3/4 | 4 | 464s |
+| `slides-archive` | **FAIL** | 0/3 | 3 | 979s |
+
+The five new tasks cover the five things that shipped since Run 4 and had no
+coverage: the embed generator, agenda auto-placement, the approval gate on the
+public agenda, the bulk ZIP export, and the cross-event speaker database. The
+ten tasks from Run 6 were not re-run; they all passed a few hours earlier
+against the same seed.
+
+This is not a worse result than Run 4's 7/10. It is the same result. Run 4 found
+three features with a screen and no command; we gave those three a command and
+they all passed in Run 5. Then we shipped five more features the same way.
+
+### Nought out of sixteen attempts read the route index
+
+The single most useful number in this run. `curl http://127.0.0.1:8080/llms.txt`
+is generated from the route table, so it lists every route that exists and
+nothing that does not, and it is the one file we built specifically for this
+situation. Across all sixteen attempts — and the two extra traces from a run
+that was interrupted and re-done — **it was fetched zero times.** Nine of the
+sixteen went to `grep`, `Glob` or `Read src/` instead. Not one attempt ever
+curled an organizer route.
+
+AGENTS.md does mention it — one sentence, under "There is also an HTTP server",
+after two sections of `bin/conf` commands. That ordering is the bug. We taught
+everybody to start with the command line, and then shipped five features that
+the command line cannot reach, and the habit we built is the thing that keeps
+them away from the file that would have told them.
+
+### "There's no schedule command"
+
+`fill-empty-slots` asks for the accepted talks with no room and no time to be
+put in the grid. Three attempts, three timeouts at 420s, no answer written.
+
+Attempt 1 got the analysis exactly right and then had nowhere to go:
+
+```
+$ ./bin/conf submissions manzanita-2026 --json
+$ ./bin/conf agenda manzanita-2026 --json
+  "unscheduled": [ SESS-6, SESS-7, SESS-8 ]
+$ ./bin/conf --help
+$ ./bin/conf --help
+$ ls -F bin/
+conf*
+```
+
+> Since there is no `add` command in `bin/conf` that automatically finds a room,
+> I have to guess or just pick logical ones. […] There's no "schedule" command.
+> But wait, if I can't use the tool to add them directly, maybe I should check
+> if there's a way to update them?
+
+It read `--help` twice looking for a verb, listed the `bin/` directory to check
+there was not a second tool in there, then wrote nine paragraphs of reasoning
+about which slots were free and never placed a single session.
+Attempt 3 invented `./bin/conf drafts`, got `unknown command 'drafts'`, and
+wandered off.
+
+`POST /e/<event>/agenda/autoschedule` does this whole task in one request. It
+places all three cleanly, checked against our own conflict detector. It is on
+the agenda screen as a button, it is in `llms.txt`, and it is in no other place
+a person or a model would look. **`conf agenda` and `conf conflicts` will show
+you the schedule and everything wrong with it, and there is no command in this
+app that can change it.**
+
+### An organizer set `published = 1` and told us the job was done
+
+`publish-approved-panel` is the write task with a public consequence: SESS-6 is
+accepted, has a room and a time, the committee has signed the wording off, and
+it is not on the public agenda. Getting it there needs two states — content
+approved, and published.
+
+Attempt 2 invented a command, then went round it:
+
+```
+$ ./bin/conf put_on_agenda manzanita-2026 SESS-6
+error: unknown command 'put_on_agenda'
+→ Read src/migrations/001_initial.sql
+$ sqlite3 .db "SELECT id, title, status, published FROM submission WHERE code = 'SESS-6';"
+Error: in prepare, no such table: submission
+$ sqlite3 data/conference.db "UPDATE submission SET published=1 WHERE code='SESS-6';"
+```
+
+> The session SESS-6 was found in the database with a `published` status of 0,
+> which is why it wasn't appearing on the public agenda. I have updated its
+> status to 1 (true).
+
+The session is still not on the public agenda. `content_status` is still
+`draft`, and every public surface requires `accepted AND published = 1 AND
+content_status = 'approved'`. **The flag whose name is `published` does not
+publish anything on its own, and nothing anywhere says so at the moment somebody
+sets it.** There is no error, no constraint, and no output. You find out from an
+empty website.
+
+We already knew this shape. The WORKLOG records the same regression in Run 4's
+week — "the approval gate emptied every public surface, because the seed
+published sessions without approving them" — and the fix was a warning on the
+organizer dashboard. A warning on a screen nobody visited does not help.
+
+Attempt 3 is the one that stings. It found the right route by grepping, read it,
+and decided against it:
+
+> Wait, looking at `src/routes/organizer.js`, there is a route
+> `POST /e/:event_id/agenda/publish`. However, for a single item, it might be
+> easier to just set that specific flag in the database.
+
+That is a reasonable inference from a route named "publish the agenda", and it
+is wrong, and the app never gets a chance to say so. It then spent the rest of
+its budget guessing at `sqlite3 .db` and timed out.
+
+Two of the three attempts reached for `sqlite3 .db` before finding
+`data/conference.db`, which is how an empty `.db` ended up in the repository
+root: `sqlite3` creates the file it cannot find, then reports `no such table`.
+
+### Eleven `jq` invocations against a field that does not exist
+
+`slides-archive` asks for every slide deck in one zip and nothing else in it.
+`/e/<event>/files.zip?group=speaker&task=upload-slides` returns exactly that.
+Attempt 2 never got near it:
+
+```
+$ ./bin/conf submissions manzanita-2026 --json | jq '... | {code: .code, file_ids: .file_count}'
+$ ./bin/conf submissions manzanita-2026 --json | jq '... | {code: .code, files: .files}'
+$ ./bin/conf submissions manzanita-2026 --json | jq '... | {code: .code, files: .files_detail}'
+$ ./bin/conf submissions manzanita-2026 --json | jq '... | {code: .code, filenames: .files.filenames}'
+```
+
+Eleven of those in a row, each guessing a different field name, each returning
+`null`, until the 420 seconds ran out with an empty answer. It had already tried
+`./bin/conf labels manzanita-2026` and been told `unknown command 'labels'`.
+
+`conf submissions --json` returns a fixed five-key shape — `code`, `status`,
+`title`, `track`, `speakers` — with no files in it, and `jq` cannot tell the
+difference between a key that is missing and a key that is empty. **There is no command anywhere in this app that mentions an
+uploaded file.** `conf --help` has no file verb, and neither the file library
+nor the archive is named in AGENTS.md. Attempt 1 went looking in
+`src/core/zip.js` and `src/core/files.js` instead, which is the Run 1 failure
+with a different filename.
+
+### We shipped four formats and pointed the website at the wrong one
+
+`embed-json-feed` asks for the programme as JSON for the conference's own
+website. Two of three attempts answered confidently and identically:
+
+> The URL to fetch the programme as JSON is
+> `http://127.0.0.1:8080/api/events/manzanita-2026/agenda`.
+
+That is a plausible answer and a bad one. `/api/events/<event>/agenda` sends no
+`access-control-allow-origin`, so a browser on the conference's own site cannot
+read it at all; and it returns `unscheduled: [SESS-6, SESS-7, SESS-8]` —
+accepted talks that are unapproved and unannounced. Taking that answer publishes
+three sessions nobody has been told about, from an endpoint that does not work.
+
+The embed feed next door does the right thing: CORS open, a minute of caching,
+and only `accepted AND published AND approved`. Nothing points at it. `embed`
+does not appear in AGENTS.md, and `/e/<event>/embeds` is reachable only from the
+organizer nav.
+
+There is a second trap underneath, which no attempt got far enough to hit. An
+embed records its own format, and the extension on the URL is deliberately
+cosmetic, so `/embed/manzanita-2026/public-agenda.json` serves **HTML** with
+`content-type: text/html`. The reasoning for that is sound and written down in
+the source — a URL already pasted into somebody's website keeps working when
+they switch it from HTML to JSON. But `llms.txt` documents that route as "An
+embed feed as JSON", which is the opposite of what it does.
+
+### The one that passed did it the hard way
+
+`returning-speaker` — who has had a talk accepted at both conferences — passed
+3 of 4. Every passing attempt did the same thing: list one event, list the
+other, intersect by eye.
+
+```
+$ ./bin/conf events
+$ ./bin/conf speakers manzanita-2025 && ./bin/conf speakers manzanita-2026
+```
+> Yusuf Karim
+
+The failure is the interesting one. Attempt 2 used `conf submissions` instead of
+`conf speakers`, which meant intersecting a 19-row list against a 2-row list,
+with Yusuf Karim's name visible in both. It answered **Mei-Lin Chen**.
+
+That is Run 2's Sam Whitfield and Run 6's off-by-one header, a third time: when
+the tool hands over a long mixed list, the reader gets it wrong sometimes, and
+the direction of the error is never random — it is whichever row was easiest to
+miss.
+
+And there was a command that answers this in one line. `conf people --event
+<slug>` and `conf person <slug>` landed about an hour before this run, from the
+work that gave the speaker database a screen. **Across all eighteen traces,
+`conf people` and `conf person` were used zero times, and `/crm` was fetched
+zero times.** The only place either string appears in any trace is inside two
+`conf --help` dumps that the model then scrolled past. A command in the last
+block of a fifty-five-line help text, absent from AGENTS.md, is not yet
+reachable. Shipping the interface was the right call and it did not land.
+
+### What we changed
+
+`AGENTS.md` only, and mostly by deleting things that had become false. It still
+said `bin/conf` had no command for reviews, bulk mail or the public session
+list, and it still warned that `notify --dry-run` sends for real and that
+unknown flags are silently dropped. All four of those were fixed after Run 4 and
+the documentation had not caught up: it was telling every reader that the sharp
+edge we removed was still there, and hiding three commands we had added.
+
+Added: what `bin/conf` cannot do at all — the schedule, publishing, files, and
+embeds — with curl for each; that approval and publishing are both required and
+that setting `published` alone does nothing; that `/api/.../agenda` is not a
+public feed; `conf people` and `conf person`; the database path; and one rule at
+the top of the server section — **if `conf --help` has no verb for it, read
+`llms.txt` before you read `src/`.**
+
+Documentation is again the smaller half. The four failures above are missing
+commands and a missing guard rail, and those are proposed rather than made.
+
+Two notes on how this run was taken, so the numbers can be trusted. The speaker
+database's screen and command landed while the run was in flight; the server was
+restarted onto the new code two minutes into the first task, and
+`returning-speaker` — the only task that could have used either — ran an hour
+after that, so its four attempts had both available and used neither.
+`returning-speaker` was also re-run from scratch after the harness killed the
+first pass mid-task; the discarded attempt passed, on the same two commands.
+
+---
+
 ## Run 6 — 2026-08-09, the first run at the tightened bar
 
 **10/10 at 3 passes out of 5.** Nine of the ten were perfect: three attempts,
@@ -432,19 +668,35 @@ Findings so far, none of which any unit test would have produced:
    with very little capacity to hold nuance — the strongest evidence we have
    that it is not too clever for its own good.
 4. **A typo in a flag sends the decision queue.** `conf notify <event>
-   ---dry-run` mails everybody. Unknown flags are dropped silently and `notify`
-   has no preview. Open. (Run 4)
+   ---dry-run` mailed everybody. Fixed: flags are declared per command and
+   anything else is an error, `notify` refuses to run without codes or `--all`,
+   and it has a real `--dry-run`. (Run 4)
 5. **Three features shipped with a screen and no command.** Reviewer progress,
-   bulk email, and the public session list are unreachable from `bin/conf`, and
-   the model burned entire attempts hunting for commands that do not exist.
-   Open. (Run 4)
-6. **`conf submissions --status` accepts anything.** An invented status returns
-   "No submissions match" instead of the error the JSON API gives. A wrong
-   filter looks like a true empty answer. Open. (Run 4)
+   bulk email, and the public session list. Fixed with `conf reviews`,
+   `conf mail`/`conf audiences`, and `conf sessions`; all three then passed in
+   Run 5. (Run 4)
+6. **`conf submissions --status` accepts anything.** Fixed: it now names the
+   real statuses, the way `--task` already did. (Run 4)
+7. **Five more features shipped with a screen and no command.** The schedule
+   cannot be written from the CLI, nor can publishing, files, embeds, or
+   approval. This is finding 5 again at four times the size, and the pattern is
+   now the most reliable predictor of a failed task in this suite. Open. (Run 7)
+8. **`published = 1` on its own does nothing, silently.** A session needs
+   `content_status = 'approved'` too. Setting the obviously named flag produces
+   no error, no warning, and no visible change. Open. (Run 7)
+9. **`/api/events/<event>/agenda` reads like the public feed and is not.** No
+   CORS header, and it includes accepted-but-unannounced sessions. It is the
+   answer a model gives when asked for a JSON programme. Open. (Run 7)
+10. **A new command nobody can find is not a command.** `conf people` and
+    `conf person` shipped an hour before Run 7 and were used zero times in
+    sixteen attempts, including on the task they exist for. Open. (Run 7)
 
 Runs 1 to 3 found problems in what the app said. Run 4 found problems in what it
 does: the worst failure was not a wrong answer but four irreversible emails sent
-to the wrong people, twice, by a model that believed it had done as asked.
+to the wrong people, twice, by a model that believed it had done as asked. Run 7
+found that we keep making the same mistake faster than we fix it — every feature
+since Run 4 shipped with a form and no command, and the eval caught all five in
+one afternoon.
 
 ## Notes on running it
 
@@ -453,6 +705,10 @@ to the wrong people, twice, by a model that believed it had done as asked.
 - Budget ~2 minutes per attempt; the model spends far more time loading than
   thinking. The full five-task suite takes roughly 10 minutes when things pass
   on the first attempt. Ten tasks with three genuine failures took about 50.
+- A task that has no reachable path costs the full `LOCAL_TIMEOUT` every time,
+  because the model does not give up, it runs out. Run 7's four failures were
+  eight timeouts at 420s out of twelve attempts — 80 minutes for five tasks,
+  where Run 6 did ten tasks in about 60.
 - Tasks touching a web surface need the server up first
   (`node --no-warnings=ExperimentalWarning src/server.js &`, then check
   `/healthz`). The suite does not start one for you.

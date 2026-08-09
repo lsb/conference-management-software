@@ -1,0 +1,1 @@
+This directory contains a conference management app. Our AV contractor wants every slide deck the Manzanita 2026 speakers have sent us, as one zip file with nothing else in it - no headshots, no signed agreements, just the decks. Save it as av-slides.zip in this directory.

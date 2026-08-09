@@ -9,7 +9,13 @@
 import { openDatabase, DEFAULT_DB_PATH } from './db.js';
 import { decide, notify, awaitingNotification, participantsOf } from './core/submissions.js';
 import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
-import { findConflicts, scheduledSessions, unscheduledSessions, localTime, localDay } from './core/schedule.js';
+import {
+  findConflicts, scheduledSessions, unscheduledSessions, conflictsForSlot,
+  autoSchedule, localTime, localDay,
+} from './core/schedule.js';
+import { readStoredFile } from './core/files.js';
+import { buildZip } from './core/zip.js';
+import { writeFileSync } from 'node:fs';
 import { createMagicLink } from './core/auth.js';
 import { queueEmail } from './core/mail.js';
 import { audienceSizes, resolveAudience } from './core/audience.js';
@@ -30,8 +36,18 @@ Usage:
   conf notify <event> <CODE>...          email those speakers their decision
               [--all] [--dry-run]        --all means every queued decision
 
+  conf people [--q text] [--tag T]       the speaker database, across every event
+              [--event SLUG]             who spoke at one particular event
+              [--never-spoken]           people we know but have never had on stage
+  conf person <person-slug>              one person's whole history, notes, and tags
+
   conf sessions <event> [--q text]       what the public can actually attend
   conf agenda <event>                    the schedule, with speakers
+  conf schedule <event> <CODE>           put one session in a room at a time
+              --room SLUG --at "YYYY-MM-DDTHH:MM" [--minutes N]
+  conf autoschedule <event>              place everything that has no slot yet
+  conf files <event> [--task SLUG]       what speakers have uploaded
+              [--zip PATH] [--group speaker|session|flat]
   conf conflicts <event>                 clashes in the schedule
   conf speakers <event>                  accepted speakers and what they owe
   conf reviews <event>                   per reviewer: submitted and still to do
@@ -48,10 +64,14 @@ Usage:
 
   conf portal-link <event> <person-slug> a one-time sign-in link for a speaker
 
-  conf people [--q text] [--tag T]       the speaker database, across every event
-              [--event SLUG]             who spoke at one particular event
-              [--never-spoken]           people we know but have never had on stage
-  conf person <person-slug>              one person's whole history, notes, and tags
+What this tool cannot do:
+
+  It reads everything, and it changes decisions, reminders, and messages.
+  Publishing, files, embeds and forms live on the web server. Start there:
+
+    curl -s http://127.0.0.1:8080/llms.txt
+
+  If there is no verb below for what you want, read that before reading src/.
 
 Options:
   --status <s>   pending | accept_queue | decline_queue | accepted | declined | withdrawn | draft
@@ -92,6 +112,9 @@ const COMMAND_FLAGS = {
   person: [],
   submissions: ['status', 'q'],
   sessions: ['q'],
+  schedule: ['room', 'at', 'minutes'],
+  autoschedule: [],
+  files: ['task', 'zip', 'group'],
   show: [],
   accept: [],
   decline: [],
@@ -492,6 +515,137 @@ const COMMANDS = {
     return 0;
   },
 
+  /**
+   * Put one session in a room at a time.
+   *
+   * Refuses a clash rather than accepting it, exactly as the web form does --
+   * both call conflictsForSlot, so they cannot disagree about what a clash is.
+   */
+  schedule(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const submission = requireSubmission(db, event, args._[2]);
+
+    if (!args.room || !args.at) {
+      throw withHint(new Error('a session needs a room and a time'),
+        `conf schedule ${event.slug} ${submission.code} --room <slug> --at "2026-10-12T09:00"`
+        + `\n      rooms: ${db.prepare('SELECT slug FROM room WHERE event_id = ?').all(event.id).map((r) => r.slug).join(', ') || 'none defined'}`);
+    }
+
+    const room = db.prepare('SELECT * FROM room WHERE event_id = ? AND slug = ?')
+      .get(event.id, args.room);
+    if (!room) {
+      const known = db.prepare('SELECT slug FROM room WHERE event_id = ?').all(event.id).map((r) => r.slug);
+      throw withHint(new Error(`no room '${args.room}' at this event`),
+        known.length ? `rooms are: ${known.join(', ')}` : 'this event has no rooms yet');
+    }
+
+    const minutes = Number(args.minutes ?? 45);
+    const startsAt = localToInstant(args.at, event.timezone);
+    if (!startsAt) {
+      throw withHint(new Error(`could not read '${args.at}' as a time`),
+        'use YYYY-MM-DDTHH:MM, in the event\'s own timezone');
+    }
+    const endsAt = new Date(Date.parse(startsAt) + minutes * 60000)
+      .toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+    const clashes = conflictsForSlot(db, event.id, {
+      submissionId: submission.id, roomId: room.id, startsAt, endsAt,
+    }).filter((c) => c.severity === 'error');
+
+    if (clashes.length > 0) {
+      throw withHint(new Error(`that slot clashes: ${clashes.map((c) => c.detail).join('; ')}`),
+        'pick another room or time, or move the other session first');
+    }
+
+    db.prepare('UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ? WHERE id = ?')
+      .run(room.id, startsAt, endsAt, submission.id);
+
+    if (args.json) return output(args, { code: submission.code, room: room.slug, starts_at: startsAt, ends_at: endsAt });
+    console.log(`${submission.code} is now in ${room.name}, ${startsAt} to ${endsAt}.`);
+    console.log('It is not on the public agenda until its content is approved and it is published.');
+    return 0;
+  },
+
+  /** Place everything that has no slot. A draft to argue with, not a timetable. */
+  autoschedule(db, args) {
+    const event = requireEvent(db, args._[1]);
+    const placed = autoSchedule(db, event.id, {
+      toInstant: (value) => localToInstant(value, event.timezone),
+    });
+
+    if (args.json) return output(args, { placed });
+    if (placed.length === 0) {
+      console.log('Nothing could be placed. Either everything has a slot, or there are no rooms.');
+      return 0;
+    }
+    output(args, placed, 'Nothing placed.', 'session');
+    const left = unscheduledSessions(db, event.id).length;
+    if (left > 0) console.log(`${left} still without a slot.`);
+    console.log('Nothing has been published; check it first.');
+    return 0;
+  },
+
+  /** What speakers have sent in, and optionally all of it in one archive. */
+  files(db, args) {
+    const event = requireEvent(db, args._[1]);
+
+    if (args.task) {
+      const known = taskDefinitions(db, event.id).map((t) => t.slug);
+      if (!known.includes(args.task)) {
+        throw withHint(new Error(`no task called '${args.task}' at this event`),
+          known.length ? `tasks are: ${known.join(', ')}` : 'this event has no tasks');
+      }
+    }
+
+    const rows = db.prepare(
+      `SELECT f.slug, f.filename, f.content_type, f.byte_size, f.created_at,
+              p.first_name || ' ' || p.last_name AS uploaded_by,
+              td.slug AS task, s.code AS submission
+         FROM file f
+         LEFT JOIN person p ON p.id = f.uploaded_by_person_id
+         LEFT JOIN task_instance ti ON ti.file_id = f.id
+         LEFT JOIN task_definition td ON td.id = ti.definition_id
+         LEFT JOIN submission s ON s.id = ti.submission_id
+        WHERE f.event_id = ? AND f.superseded_at IS NULL
+          AND (? IS NULL OR td.slug = ?)
+        ORDER BY p.last_name, f.created_at`,
+    ).all(event.id, args.task ?? null, args.task ?? null);
+
+    if (!args.zip) {
+      return output(args, rows.map((r) => ({
+        file: r.slug, filename: r.filename, from: r.uploaded_by ?? '',
+        task: r.task ?? '', submission: r.submission ?? '',
+        kb: Math.max(1, Math.round(r.byte_size / 1024)),
+      })), 'Nothing has been uploaded yet.', 'file');
+    }
+
+    const grouping = args.group ?? 'speaker';
+    if (!['speaker', 'session', 'flat'].includes(grouping)) {
+      throw withHint(new Error(`unknown grouping '${grouping}'`),
+        'use --group speaker, --group session, or --group flat');
+    }
+
+    const entries = [];
+    for (const row of rows) {
+      const stored = readStoredFile(db, row.slug);
+      if (!stored) continue;
+      const folder = grouping === 'speaker' ? (row.uploaded_by ?? 'unknown')
+        : grouping === 'session' ? (row.submission ?? 'no session') : '';
+      entries.push({ name: folder ? `${folder}/${row.filename}` : row.filename,
+        data: stored.data, date: row.created_at });
+    }
+
+    if (entries.length === 0) {
+      throw withHint(new Error('there are no files to put in an archive'),
+        args.task ? `nobody has uploaded anything for '${args.task}'` : 'nothing has been uploaded');
+    }
+
+    writeFileSync(args.zip, buildZip(entries));
+    if (args.json) return output(args, { wrote: args.zip, files: entries.length });
+    console.log(`Wrote ${entries.length} file(s) to ${args.zip}.`);
+    return 0;
+  },
+
   /** Who is behind on reviewing, which is the only reason to look. */
   reviews(db, args) {
     const event = requireEvent(db, args._[1]);
@@ -724,6 +878,30 @@ function requireSubmission(db, event, code) {
       `list them with \`conf submissions ${event.slug}\``);
   }
   return submission;
+}
+
+/**
+ * Read a wall-clock time in the event's timezone as an instant.
+ *
+ * The same conversion the web form does. Interpreting "09:00" as UTC would shift
+ * every session by the event's offset, which is the bug that puts a keynote at
+ * two in the morning.
+ */
+function localToInstant(value, timezone) {
+  const text = String(value).trim().replace(' ', 'T');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(text)) return null;
+
+  const naive = `${text.slice(0, 16)}:00`;
+  const guess = new Date(`${naive}Z`);
+  if (Number.isNaN(guess.getTime())) return null;
+
+  const asLocal = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(guess).replace(' ', 'T');
+
+  const offset = guess.getTime() - new Date(`${asLocal}Z`).getTime();
+  return new Date(guess.getTime() + offset).toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function fullNameOf(person) {

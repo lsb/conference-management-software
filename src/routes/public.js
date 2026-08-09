@@ -33,7 +33,9 @@ export function mountPublic(router) {
   // named "agenda.json" and 404.
   for (const format of ['json', 'xml', 'ics']) {
     router.get(`/embed/:event/:embed.${format}`, embedFeed,
-      `An embed feed as ${format.toUpperCase()}.`);
+      `An embed feed. The extension is cosmetic: the embed's own format setting `
+      + `decides what comes back, so for ${format.toUpperCase()} set that embed's `
+      + `format to ${format} at /e/<event>/embeds.`);
   }
   router.get('/embed/:event/:embed', embedFeed,
     'An embed feed as styled HTML. Add .json, .xml, or .ics for the same data in another shape.');

@@ -41,7 +41,9 @@ export function mountApi(router) {
     'Body: {"codes":["SESS-1"]}. Emails the speakers and finalises those statuses.');
 
   router.get('/api/events/:event/agenda', getAgenda,
-    'Scheduled sessions, plus the accepted ones still missing a slot.');
+    'ORGANIZER view of the schedule: includes unapproved and unpublished sessions, '
+    + 'and sends no CORS header, so it is not usable from another site. '
+    + 'For a public feed create an embed and use /embed/<event>/<slug>.');
 
   router.get('/api/events/:event/conflicts', getConflicts,
     'Speaker double-bookings, room clashes, and track collisions.');

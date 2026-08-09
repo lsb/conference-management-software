@@ -107,7 +107,8 @@ async function handle(app, req, res) {
     });
   } catch (err) {
     response = errorResponse(err, req);
-    if (!err.status || err.status >= 500) console.error(err);
+    if (!err.status && !constraintMessage(err)) console.error(err);
+    else if (err.status >= 500) console.error(err);
   }
 
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
@@ -124,12 +125,33 @@ async function handle(app, req, res) {
 }
 
 /**
+ * A rule the database enforced, phrased for whoever tripped it.
+ *
+ * `RAISE(ABORT, '...')` messages are written for people -- they say what is
+ * wrong and what to do instead -- so surfacing them as "internal server error"
+ * throws away the only useful thing about them. Genuine SQLite faults (a typo in
+ * a query, a missing table) are not constraint violations and still get the
+ * generic 500 they deserve.
+ */
+function constraintMessage(err) {
+  if (err?.code !== 'ERR_SQLITE_ERROR') return null;
+  const text = String(err.message ?? '');
+  if (!/constraint|abort/i.test(text) && err.errcode !== 19) return null;
+  return text.replace(/^stepping,\s*/, '');
+}
+
+/**
  * Render an error the way the caller can act on.
  *
  * JSON for API paths, HTML for pages, and in both cases the hint travels with
  * the message. See docs/DESIGN.md on why errors state the fix.
  */
 function errorResponse(err, req) {
+  const constraint = constraintMessage(err);
+  if (constraint && !err.status) {
+    err = new HttpError(400, constraint, 'the database refused this, so nothing was changed');
+  }
+
   const status = err.status ?? 500;
   const message = status >= 500 ? 'internal server error' : err.message;
   const hint = status >= 500 ? 'check the server log' : (err.hint ?? '');
