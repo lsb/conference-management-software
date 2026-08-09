@@ -247,6 +247,93 @@ export function agendaByRoom(db, eventId) {
   }));
 }
 
+/**
+ * The slots a session could go in: each event day, each room, on the hour.
+ *
+ * Deliberately coarse. A conference grid is built on the hour or the half hour,
+ * and offering every minute would produce a schedule no attendee could read and
+ * no signage could print.
+ */
+export function candidateSlots(db, eventId, { fromHour = 9, toHour = 18, stepMinutes = 60 } = {}) {
+  const event = db.prepare('SELECT * FROM event WHERE id = ?').get(eventId);
+  if (!event?.starts_at || !event?.ends_at) return [];
+
+  const rooms = db.prepare('SELECT * FROM room WHERE event_id = ? ORDER BY sort_order, name')
+    .all(eventId);
+  if (rooms.length === 0) return [];
+
+  const days = [];
+  for (let d = new Date(event.starts_at); d <= new Date(event.ends_at); d.setUTCDate(d.getUTCDate() + 1)) {
+    days.push(localDay(d.toISOString(), event.timezone));
+    if (days.length > 30) break;   // a conference is not a month long
+  }
+
+  const slots = [];
+  for (const day of [...new Set(days)]) {
+    for (let minutes = fromHour * 60; minutes < toHour * 60; minutes += stepMinutes) {
+      const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
+      const mm = String(minutes % 60).padStart(2, '0');
+      for (const room of rooms) {
+        slots.push({ day, time: `${hh}:${mm}`, room });
+      }
+    }
+  }
+  return slots;
+}
+
+/**
+ * Place everything that has no slot yet.
+ *
+ * Greedy and deliberately unclever: walk the sessions longest-first, and give
+ * each the first slot that does not clash. It is not an optimal timetable and
+ * does not pretend to be -- it is the tedious first pass an organizer would
+ * otherwise do by hand, after which they move things around by judgement we do
+ * not have. Nothing it places is published; it is a draft to argue with.
+ *
+ * `toInstant` converts a day and a wall-clock time in the event's timezone to
+ * an instant, and is injected because that conversion lives in the HTTP layer.
+ */
+export function autoSchedule(db, eventId, { toInstant, defaultMinutes = 45 } = {}) {
+  const unscheduled = unscheduledSessions(db, eventId);
+  if (unscheduled.length === 0) return [];
+
+  const slots = candidateSlots(db, eventId);
+  if (slots.length === 0) return [];
+
+  const placed = [];
+  const taken = new Set();
+
+  for (const session of unscheduled) {
+    const slot = slots.find((s) => {
+      const key = `${s.day} ${s.time} ${s.room.id}`;
+      if (taken.has(key)) return false;
+
+      const startsAt = toInstant(`${s.day}T${s.time}`);
+      const endsAt = new Date(Date.parse(startsAt) + defaultMinutes * 60_000)
+        .toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+      return conflictsForSlot(db, eventId, {
+        submissionId: session.id, roomId: s.room.id, startsAt, endsAt,
+      }).filter((c) => c.severity === 'error').length === 0;
+    });
+
+    if (!slot) continue;   // nowhere free; leave it for a human
+
+    const startsAt = toInstant(`${slot.day}T${slot.time}`);
+    const endsAt = new Date(Date.parse(startsAt) + defaultMinutes * 60_000)
+      .toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+    db.prepare('UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ? WHERE id = ?')
+      .run(slot.room.id, startsAt, endsAt, session.id);
+
+    taken.add(`${slot.day} ${slot.time} ${slot.room.id}`);
+    placed.push({ code: session.code, title: session.title, room: slot.room.name,
+      day: slot.day, time: slot.time });
+  }
+
+  return placed;
+}
+
 /** The calendar date an instant falls on, in the event's own timezone. */
 export function localDay(iso, timezone = 'UTC') {
   return new Intl.DateTimeFormat('en-CA', {

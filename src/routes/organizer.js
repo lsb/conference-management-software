@@ -6,11 +6,12 @@ import { decide, notify, awaitingNotification, participantsOf, setStatus } from 
 import { outstandingTasks, runReminders } from '../core/tasks.js';
 import {
   findConflicts, unscheduledSessions, scheduledSessions, conflictsForSlot,
-  agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, localTime,
+  agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, autoSchedule, localTime,
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
 import { sendCalendarInvite } from '../core/ics.js';
 import { contentPanel } from './content.js';
+import { now } from '../db.js';
 import {
   findEvent, findSubmission, requireOrganizer, organizerNav, statusPill, statusCounts,
   STATUS_TABS, STATUS_LABELS, tabs, empty, when, dateOnly, fullName,
@@ -41,6 +42,12 @@ export function mountOrganizer(router) {
 
   router.get('/e/:event/agenda', agenda,
     'The schedule. ?view=list|day|week|track|room|conflicts.');
+
+  router.post('/e/:event/agenda/autoschedule', postAutoSchedule,
+    'Place every unscheduled session in the first slot that does not clash. A draft, not a timetable.');
+
+  router.post('/e/:event/agenda/publish', postPublish,
+    'Put every approved, scheduled session on the public agenda.');
 
   router.get('/e/:event/speakers', speakers,
     'Everyone speaking, with what they still owe.');
@@ -538,6 +545,17 @@ function agenda(ctx) {
   const unscheduled = unscheduledSessions(ctx.db, event.id);
   const sessions = scheduledSessions(ctx.db, event.id);
 
+  const allRooms = ctx.db.prepare('SELECT * FROM room WHERE event_id = ? ORDER BY sort_order, name')
+    .all(event.id);
+
+  // Pre-fill with the event's first morning, so placing a session is two clicks
+  // rather than typing a date somebody has to go and look up.
+  const firstDay = (event.starts_at ?? '').slice(0, 10);
+  const defaultSlot = {
+    start: firstDay ? `${firstDay}T09:00` : '',
+    end: firstDay ? `${firstDay}T09:45` : '',
+  };
+
   const views = ['list', 'day', 'week', 'track', 'room', 'conflicts'];
   if (!views.includes(view)) {
     throw badRequest(`unknown view '${view}'`, `use one of: ${views.join(', ')}`);
@@ -664,6 +682,7 @@ function agenda(ctx) {
     body: html`
       <h1>Agenda</h1>
       <p class="sub">${sessions.length} scheduled, ${unscheduled.length} still without a slot.</p>
+      ${ctx.query.get('done') ? html`<p class="flash">${ctx.query.get('done')}</p>` : ''}
 
       ${tabs(views.map((v) => ({
         href: `/e/${event.slug}/agenda?view=${v}`,
@@ -678,18 +697,121 @@ function agenda(ctx) {
 
       ${content}
 
+      ${view === 'list' ? html`
+        <h2>Publish</h2>
+        <p class="sub">Puts every accepted, approved, scheduled session on the public
+          agenda. Anything unapproved or without a time is held back and counted.</p>
+        <form method="post" action="/e/${event.slug}/agenda/publish">
+          <button type="submit">Publish the agenda</button>
+        </form>` : ''}
+
       ${unscheduled.length > 0 && view === 'list' ? html`
         <h2>Accepted, but not scheduled</h2>
-        <table><tbody>
-          ${unscheduled.map((s) => html`
-            <tr>
-              <td><a href="/e/${event.slug}/submissions/${s.code}"><code>${s.code}</code></a></td>
-              <td>${s.title}</td>
-              <td>${statusPill(s.status)}</td>
-            </tr>`)}
-        </tbody></table>` : ''}
+        <p class="sub">Give each a room and a time. A clash is refused, not accepted
+          and complained about afterwards.</p>
+
+        <form method="post" action="/e/${event.slug}/agenda/autoschedule">
+          <div class="actions">
+            <button type="submit" class="secondary">
+              Place all ${unscheduled.length} automatically
+            </button>
+          </div>
+          <p class="muted">A greedy first pass: each session gets the first slot that
+            does not clash. It is a draft to argue with, and nothing is published.</p>
+        </form>
+
+        <div class="scroll">
+        <table>
+          <thead><tr><th>Code</th><th>Title</th><th>Room</th><th>Starts</th><th>Ends</th><th></th></tr></thead>
+          <tbody>
+            ${unscheduled.map((s) => html`
+              <tr>
+                <td><a href="/e/${event.slug}/submissions/${s.code}"><code>${s.code}</code></a></td>
+                <td>${s.title}<br>${statusPill(s.status)}</td>
+                <td colspan="4">
+                  <form method="post" action="/e/${event.slug}/submissions/${s.code}/schedule" class="row">
+                    <div>
+                      <label for="room_${s.code}">Room</label>
+                      <select id="room_${s.code}" name="room">
+                        <option value="">- choose -</option>
+                        ${allRooms.map((r) => html`<option value="${r.slug}">${r.name}</option>`)}
+                      </select>
+                    </div>
+                    <div>
+                      <label for="from_${s.code}">Starts</label>
+                      <input type="datetime-local" id="from_${s.code}" name="starts_at"
+                             value="${defaultSlot.start}">
+                    </div>
+                    <div>
+                      <label for="to_${s.code}">Ends</label>
+                      <input type="datetime-local" id="to_${s.code}" name="ends_at"
+                             value="${defaultSlot.end}">
+                    </div>
+                    <div style="flex:0 0 auto"><button type="submit">Place it</button></div>
+                  </form>
+                </td>
+              </tr>`)}
+          </tbody>
+        </table>
+        </div>` : ''}
     `,
   }));
+}
+
+function postAutoSchedule(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  const placed = autoSchedule(ctx.db, event.id, {
+    toInstant: (localValue) => fromLocalInput(localValue, event.timezone),
+  });
+
+  const remaining = unscheduledSessions(ctx.db, event.id).length;
+  const note = placed.length === 0
+    ? 'Nothing could be placed automatically. Add rooms, or move something by hand.'
+    : `Placed ${placed.length} session(s). ${remaining > 0 ? `${remaining} still need a slot. ` : ''}`
+      + 'Nothing has been published; check it before you do.';
+
+  return redirect(`/e/${event.slug}/agenda?view=list&done=${encodeURIComponent(note)}`);
+}
+
+/**
+ * Publish the agenda.
+ *
+ * Only sessions that are accepted, approved, and actually scheduled. Publishing
+ * a session with no time on it puts a hole in somebody's programme, and
+ * publishing unapproved content is the thing approval exists to prevent, so
+ * both are counted and reported rather than silently skipped.
+ */
+function postPublish(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  const ready = ctx.db.prepare(
+    `SELECT count(*) AS n FROM submission
+      WHERE event_id = ? AND status = 'accepted' AND content_status = 'approved'
+        AND starts_at IS NOT NULL AND room_id IS NOT NULL AND published = 0`,
+  ).get(event.id).n;
+
+  const heldBack = ctx.db.prepare(
+    `SELECT
+       sum(content_status != 'approved') AS unapproved,
+       sum(starts_at IS NULL OR room_id IS NULL) AS unscheduled
+     FROM submission
+      WHERE event_id = ? AND status = 'accepted' AND published = 0`,
+  ).get(event.id);
+
+  ctx.db.prepare(
+    `UPDATE submission SET published = 1, updated_at = ?
+      WHERE event_id = ? AND status = 'accepted' AND content_status = 'approved'
+        AND starts_at IS NOT NULL AND room_id IS NOT NULL`,
+  ).run(now(), event.id);
+
+  const parts = [`Published ${ready} session(s).`];
+  if (heldBack.unapproved > 0) parts.push(`${heldBack.unapproved} held back: content not approved.`);
+  if (heldBack.unscheduled > 0) parts.push(`${heldBack.unscheduled} held back: no time slot.`);
+
+  return redirect(`/e/${event.slug}/agenda?view=list&done=${encodeURIComponent(parts.join(' '))}`);
 }
 
 function postSchedule(ctx) {
