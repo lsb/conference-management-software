@@ -245,7 +245,28 @@ if (isMain) {
   const host = process.env.HOST ?? '127.0.0.1';
   const app = createApp();
 
-  createServer(app.handle).listen(port, host, () => {
+  const server = createServer(app.handle);
+
+  // A busy port is the most common way to start this app and think it is
+  // broken. Node's default is an unhandled ECONNREFUSED-shaped stack trace,
+  // which reads like a crash and is usually just "you already have one running".
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Something is already listening on ${host}:${port}.`);
+      console.error(`If it is this app, it is already running: http://${host}:${port}`);
+      console.error(`Check with: curl -s -o /dev/null -w '%{http_code}' http://${host}:${port}/healthz`);
+      console.error(`Otherwise start this one elsewhere: PORT=${port + 1} npm start`);
+      process.exit(1);
+    }
+    if (err.code === 'EACCES') {
+      console.error(`Not allowed to listen on port ${port}. Ports below 1024 need privileges.`);
+      console.error('Try: PORT=8080 npm start');
+      process.exit(1);
+    }
+    throw err;
+  });
+
+  server.listen(port, host, () => {
     const events = app.db.prepare('SELECT slug, name FROM event ORDER BY starts_at DESC').all();
     console.log(`listening on http://${host}:${port}`);
     if (events.length === 0) {
