@@ -11,7 +11,7 @@
     "start": "node --no-warnings=ExperimentalWarning src/server.js",
     "migrate": "node --no-warnings=ExperimentalWarning src/migrate.js",
     "seed": "node --no-warnings=ExperimentalWarning src/seed.js",
-    "test": "node --no-warnings=ExperimentalWarning --test test/"
+    "test": "node --no-warnings=ExperimentalWarning --test 'test/*.test.js'"
   },
   "dependencies": {},
   "devDependencies": {}
