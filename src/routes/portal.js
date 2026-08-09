@@ -11,6 +11,11 @@ import { cookieHeader, clearCookieHeader } from '../http/request.js';
 import { outstandingTasks, completeTask } from '../core/tasks.js';
 import { queueEmail } from '../core/mail.js';
 import { storeUpload, IMAGE_TYPES } from '../core/files.js';
+import { setStatus, logActivity } from '../core/submissions.js';
+import {
+  fieldsOf, isClosed, optionResolver, conditionsFor, renderField,
+  answersFor, personValues, validateAnswers, applyAnswers,
+} from './formfields.js';
 import { findEvent, statusPill, empty, dateOnly, when, fullName } from './shared.js';
 
 export function mountPortal(router) {
@@ -27,6 +32,12 @@ export function mountPortal(router) {
   router.get('/portal/:event/submissions', portalSubmissions, 'The speaker\'s own proposals.');
   router.get('/portal/:event/profile', profileForm, 'The speaker\'s own details, editable by them.');
   router.post('/portal/:event/profile', postProfile, 'Save the speaker\'s own details.');
+  router.get('/portal/:event/submissions/:code/edit', editSubmission,
+    'Edit or finish one of your own proposals, while the call is still open.');
+  router.post('/portal/:event/submissions/:code/edit', postEditSubmission,
+    'Save changes to your proposal. Add submit_now=1 to send a draft for review.');
+  router.post('/portal/:event/submissions/:code/withdraw', withdrawSubmission,
+    'Withdraw one of your own proposals.');
   router.get('/portal/:event/tasks', portalTasks, 'What this speaker still owes.');
   router.post('/portal/:event/tasks/:id/complete', postCompleteTask, 'Mark one task done.');
   router.get('/portal/:event/resources', resourceIndex,
@@ -227,16 +238,179 @@ function portalSubmissions(ctx) {
       <h1>Your submissions</h1>
       ${submissions.length === 0 ? empty('Nothing yet.') : submissions.map((s) => {
         const view = speakerFacingStatus(s);
+        const { editable } = editability(ctx, s);
         return html`
           <fieldset>
             <legend><code>${s.code}</code> <span class="pill ${view.key}">${view.label}</span></legend>
-            <h3 style="margin-top:0">${s.title}</h3>
-            <p>${s.description}</p>
+            <h3 style="margin-top:0">${s.title || 'Untitled draft'}</h3>
+            <p>${s.description || html`<span class="muted">You have not written the abstract yet.</span>`}</p>
             ${s.starts_at ? html`<p class="muted">Scheduled ${when(s.starts_at, event.timezone)}</p>` : ''}
+            ${s.form_id ? html`
+              <div class="actions">
+                <a class="button ${editable ? '' : 'secondary'}"
+                   href="/portal/${event.slug}/submissions/${s.code}/edit">
+                  ${s.status === 'draft' ? 'Finish this draft' : editable ? 'Edit' : 'View'}
+                </a>
+              </div>` : ''}
           </fieldset>`;
       })}
     `,
   }));
+}
+
+// --- editing your own proposal ---------------------------------------------
+
+/** One of the signed-in speaker's own submissions, or a 404 that does not leak. */
+function ownSubmission(ctx, event, person, code) {
+  const submission = ctx.db.prepare(
+    `SELECT s.* FROM submission s
+       JOIN submission_participant sp ON sp.submission_id = s.id
+      WHERE s.event_id = ? AND s.code = ? AND sp.person_id = ?`,
+  ).get(event.id, String(code).toUpperCase(), person.id);
+
+  // Same answer whether the code belongs to somebody else or to nobody, so the
+  // portal cannot be used to enumerate other people's submissions.
+  if (!submission) {
+    throw notFound(`you have no submission '${code}' at this event`,
+      `your proposals are listed at /portal/${event.slug}/submissions`);
+  }
+  return submission;
+}
+
+/**
+ * Whether this submission can still be changed by its author.
+ *
+ * A draft is always editable while its form is open -- that is what a draft is
+ * for. A sent proposal is editable until the call closes, and then locked: the
+ * programme committee has to be reviewing a fixed text, and a printed programme
+ * cannot chase a moving abstract.
+ */
+function editability(ctx, submission) {
+  const form = submission.form_id
+    ? ctx.db.prepare('SELECT * FROM form WHERE id = ?').get(submission.form_id)
+    : null;
+
+  if (['accepted', 'declined', 'withdrawn'].includes(submission.status)) {
+    return { editable: false, reason: 'This proposal has been decided, so it can no longer be edited.' };
+  }
+  if (form && isClosed(form)) {
+    return {
+      editable: false,
+      reason: `Editing closed when the call for speakers closed on ${form.close_at.slice(0, 10)}.`,
+      form,
+    };
+  }
+  return { editable: true, form };
+}
+
+function editSubmission(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const person = requirePerson(ctx, event);
+  const submission = ownSubmission(ctx, event, person, ctx.params.code);
+  const { editable, reason, form } = editability(ctx, submission);
+
+  if (!form) {
+    throw badRequest('this proposal was added by an organizer and has no form to edit against',
+      'ask an organizer to make the change');
+  }
+
+  const abstractFields = fieldsOf(ctx.db, form.id, 'abstract');
+  const participantFields = fieldsOf(ctx.db, form.id, 'participant');
+  const options = optionResolver(ctx.db, event.id);
+  const conditions = conditionsFor(ctx.db, form.id);
+  const values = {
+    ...answersFor(ctx.db, submission, abstractFields),
+    ...personValues(person, participantFields),
+  };
+  const isDraft = submission.status === 'draft';
+
+  return ok(page({
+    title: `${submission.code} - ${submission.title}`,
+    nav: nav(event, 'Submissions', person),
+    body: html`
+      <p class="sub"><a href="/portal/${event.slug}/submissions">&larr; Your submissions</a></p>
+      <h1>${submission.title || 'Untitled draft'}</h1>
+      <p class="sub"><code>${submission.code}</code> &middot;
+        <span class="pill ${speakerFacingStatus(submission).key}">${speakerFacingStatus(submission).label}</span></p>
+
+      ${!editable ? html`
+        <ul class="alerts"><li class="warn">${reason}</li></ul>
+        <h2>What you sent</h2>
+        <p><strong>${submission.title}</strong></p>
+        <p>${submission.description}</p>
+      ` : html`
+        ${isDraft ? html`<p class="flash">This is a draft. Nobody has seen it yet.
+          Finish it and press <strong>Submit for review</strong> when you are ready.</p>` : ''}
+
+        <form method="post" action="/portal/${event.slug}/submissions/${submission.code}/edit">
+          <fieldset>
+            <legend>Your proposal</legend>
+            ${abstractFields.map((f) => renderField(f, { options, values, conditions }))}
+          </fieldset>
+          <fieldset>
+            <legend>About you</legend>
+            ${participantFields.map((f) => renderField(f, { options, values, conditions }))}
+          </fieldset>
+          <div class="actions">
+            ${isDraft
+              ? html`<button type="submit" name="submit_now" value="1">Submit for review</button>
+                     <button type="submit" class="secondary">Save draft</button>`
+              : html`<button type="submit">Save changes</button>`}
+          </div>
+        </form>
+
+        <h2>Withdraw</h2>
+        <form method="post" action="/portal/${event.slug}/submissions/${submission.code}/withdraw">
+          <p class="muted">Withdrawing tells the organizers you no longer want this considered.</p>
+          <button type="submit" class="secondary">Withdraw this proposal</button>
+        </form>`}
+    `,
+  }));
+}
+
+function postEditSubmission(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const person = requirePerson(ctx, event);
+  const submission = ownSubmission(ctx, event, person, ctx.params.code);
+  const { editable, reason, form } = editability(ctx, submission);
+
+  if (!editable) {
+    throw badRequest(reason, 'contact the organizers if something needs correcting');
+  }
+
+  const abstractFields = fieldsOf(ctx.db, form.id, 'abstract');
+  const participantFields = fieldsOf(ctx.db, form.id, 'participant');
+  const all = [...abstractFields, ...participantFields];
+
+  const sendingNow = ctx.fields.bool('submit_now');
+  const stayingDraft = submission.status === 'draft' && !sendingNow;
+
+  // A draft is allowed to be incomplete. Anything heading for review is not.
+  validateAnswers(ctx.fields, all, { requireRequired: !stayingDraft });
+
+  applyAnswers(ctx.db, {
+    submission, person, eventId: event.id, fields: ctx.fields, formFields: all,
+  });
+
+  if (sendingNow && submission.status === 'draft') {
+    setStatus(ctx.db, submission.id, 'pending', { actorPersonId: person.id, detail: 'submitted from draft' });
+  } else {
+    logActivity(ctx.db, { eventId: event.id, actorPersonId: person.id, subjectType: 'submission',
+      subjectId: submission.id, verb: 'edited', detail: 'by the submitter' });
+  }
+
+  return redirect(`/portal/${event.slug}/submissions/${submission.code}/edit?saved=1`);
+}
+
+function withdrawSubmission(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  const person = requirePerson(ctx, event);
+  const submission = ownSubmission(ctx, event, person, ctx.params.code);
+
+  setStatus(ctx.db, submission.id, 'withdrawn', {
+    actorPersonId: person.id, detail: 'withdrawn by the submitter',
+  });
+  return redirect(`/portal/${event.slug}/submissions`);
 }
 
 function profileForm(ctx) {

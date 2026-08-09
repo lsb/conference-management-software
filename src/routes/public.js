@@ -261,7 +261,12 @@ function cfpForm(ctx) {
               ${fieldsOf(ctx.db, form.id, 'participant').map(renderField)}
             </fieldset>` : ''}
 
-          <div class="actions"><button type="submit">Submit proposal</button></div>
+          <div class="actions">
+            <button type="submit">Submit proposal</button>
+            <button type="submit" name="save_draft" value="1" class="secondary">Save as draft</button>
+          </div>
+          <p class="muted">A draft needs only a title. We will keep it for you and
+            you can finish it any time before the call closes.</p>
           <p class="muted">You do not need an account. We will email you a link to track it.</p>
         </form>`}
     `,
@@ -289,9 +294,13 @@ function postCfp(ctx) {
   const abstractFields = fieldsOf(ctx.db, form.id, 'abstract');
   const participantFields = fieldsOf(ctx.db, form.id, 'participant');
 
+  // A draft is a promise to come back, not a finished proposal, so only the
+  // title is insisted on. Everything else can arrive on Sunday night.
+  const asDraft = ctx.fields.bool('save_draft');
+
   for (const field of [...abstractFields, ...participantFields]) {
     const value = valueOf(ctx.fields, field);
-    if (field.required && value === '') {
+    if (field.required && value === '' && !asDraft) {
       throw badRequest(`missing required field: ${field.label}`,
         `send ${acceptedNames(field)} in the request body`);
     }
@@ -365,7 +374,9 @@ function postCfp(ctx) {
     trackId: track?.id ?? null,
     status: 'draft',
   });
-  setStatus(ctx.db, submission.id, 'pending', { actorPersonId: person.id, detail: 'submitted' });
+  if (!asDraft) {
+    setStatus(ctx.db, submission.id, 'pending', { actorPersonId: person.id, detail: 'submitted' });
+  }
 
   ctx.db.prepare(
     `INSERT INTO submission_participant (submission_id, person_id, role, is_primary_contact, sort_order)
@@ -407,7 +418,10 @@ function postCfp(ctx) {
   const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
   const portalUrl = `${base}/portal/${event.slug}/enter?token=${token}`;
 
-  if (form.send_confirmation_email) {
+  // A draft has not been submitted, so there is nothing to confirm. Sending
+  // "we have your proposal" for something the organizers cannot see would be a
+  // lie the speaker acts on.
+  if (form.send_confirmation_email && !asDraft) {
     const template = getTemplate(ctx.db, event.id, 'submission_confirmation');
     queueEmail(ctx.db, {
       eventId: event.id,
@@ -426,13 +440,21 @@ function postCfp(ctx) {
     });
   }
 
-  logActivity(ctx.db, { eventId: event.id, actorPersonId: person.id,
-    subjectType: 'submission', subjectId: submission.id, verb: 'submitted', detail: form.slug });
+  logActivity(ctx.db, { eventId: event.id, actorPersonId: person.id, subjectType: 'submission',
+    subjectId: submission.id, verb: asDraft ? 'drafted' : 'submitted', detail: form.slug });
 
   // Sign them straight in. Making somebody who just typed their whole biography
   // go and find an email before they can see what they sent is the friction this
   // product exists to remove.
   const session = consumeMagicLink(ctx.db, token);
+
+  // A draft goes straight back to its own editor: the next thing its author
+  // wants is to keep writing, not a receipt.
+  if (asDraft && session) {
+    return redirect(`/portal/${event.slug}/submissions/${submission.code}/edit?draft=1`, {
+      headers: { 'set-cookie': cookieHeader(SESSION_COOKIE, session.token) },
+    });
+  }
 
   if (form.auto_redirect_to_portal && session) {
     return redirect(`/portal/${event.slug}?submitted=${submission.code}`, {
