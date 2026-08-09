@@ -38,6 +38,23 @@ about one conference. They span every event on this instance:
 `conf speakers` lists and intersecting them by eye gets the wrong name often
 enough to matter.
 
+## It changes things too
+
+Not an inventory -- `conf --help` has the current one -- but enough to correct
+the impression that this tool only reads:
+
+```sh
+./bin/conf accept <event> SESS-3          # record a decision; sends nothing
+./bin/conf notify <event> SESS-3          # NOW tell the speaker, irreversibly
+./bin/conf autoschedule <event>           # place everything with no slot
+./bin/conf schedule <event> SESS-3 --room main-stage --at "2027-05-12T09:00"
+./bin/conf mail <event> --audience outstanding-tasks --subject "..." --body "..."
+./bin/conf files <event> --zip decks.zip --task upload-slides
+./bin/conf embeds <event> --create "Programme" --feed agenda --format json
+```
+
+Each one has `--dry-run` or a preview where sending or overwriting is involved.
+
 Add `--json` to any of them for machine-readable output. `./bin/conf --help`
 lists everything.
 
@@ -94,55 +111,57 @@ every route that exists and nothing that does not. Run 7 lost thirteen of
 sixteen attempts to models that went straight from a missing command to
 `grep`ping the source, and not one of them ever fetched that file.
 
-## What `bin/conf` cannot do at all
+## Two interfaces, and which to reach for
 
-The command line can read everything and change only decisions and reminders.
-Everything below has an organizer screen and a form, and no command.
+There is a command line and a web server. They call the same core functions, so
+they never disagree about what a clash is or what "required" means.
+
+**Do not trust this file for the list of what each one does.** It has been wrong
+twice, both times by claiming a command did not exist after somebody added it.
+Ask the things that cannot go stale, because they are generated from the code:
 
 ```sh
-# THE SCHEDULE. `conf agenda` and `conf conflicts` are read-only. There is no
-# command that puts a session in a room, and none that fills the empty slots.
-curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/agenda/autoschedule
-curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/submissions/SESS-6/schedule \
-     --data-urlencode 'room=madrone-studio' \
-     --data-urlencode 'starts_at=2026-10-13T11:00' --data-urlencode 'ends_at=2026-10-13T11:45'
-
-# THE PUBLIC AGENDA. A session needs BOTH before anybody can see it: content
-# approved, and published. Setting `published` on its own does nothing at all,
-# silently -- there is no error and the session still does not appear.
-curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/submissions/SESS-6/content \
-     --data-urlencode 'content_status=approved'
-curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/agenda/publish   # publishes every approved, scheduled one
-
-# FILES. Every deck and headshot, their versions, and a bulk download.
-curl -s http://127.0.0.1:8080/e/manzanita-2026/files
-curl -s -o slides.zip \
-  'http://127.0.0.1:8080/e/manzanita-2026/files.zip?group=speaker&task=upload-slides'
-# group=speaker|session|flat; omit ?task= for everything. `conf submissions
-# --json` has no files in it, and no amount of jq will find any.
-
-# EMBEDS: the feed a conference pastes into its own website. An embed records
-# its own format, so JSON means CREATING one with format=json -- the extension
-# on the URL is cosmetic and does not convert anything.
-curl -s http://127.0.0.1:8080/e/manzanita-2026/embeds
-curl -s -X POST http://127.0.0.1:8080/e/manzanita-2026/embeds \
-     --data-urlencode 'name=Programme JSON' --data-urlencode 'feed=agenda' \
-     --data-urlencode 'format=json'          # feed: agenda|session_list|schedule_itinerary|speaker_list|speaker_gallery
-curl -s http://127.0.0.1:8080/embed/manzanita-2026/programme-json
-
-# Bulk email to a named audience, with its exact size and recipient list.
-# `conf mail` and `conf audiences` cover the same ground.
-curl -s 'http://127.0.0.1:8080/e/manzanita-2026/mail?audience=outstanding-tasks'
+./bin/conf --help                                  # every command, always current
+curl -s http://127.0.0.1:8080/llms.txt             # every route, with recipes at the top
 ```
 
-**Do not hand somebody `/api/events/<event>/agenda` as a public feed.** It is
-the organizer's API: it sends no CORS header, so a browser cannot read it, and
-it includes accepted sessions that are unapproved and unannounced. The public,
-cross-origin, configurable feed is `/embed/<event>/<slug>`.
+`llms.txt` opens with worked examples for the jobs people actually have --
+deciding and notifying, scheduling, getting something onto the public agenda,
+handing somebody a JSON feed, emailing a group, collecting uploads. Read those
+before you read anything under `src/`. Run 7 lost thirteen of sixteen attempts
+to going straight from a missing command to `grep`ping the source, and not one
+attempt fetched that file.
+
+## Four things that are not obvious from either
+
+These are the rules, not the inventory. They do not change when somebody adds a
+command.
+
+**Deciding and telling are separate.** `accept` moves a submission into a queue
+and sends nothing. `notify` emails the speakers and finalises it, irreversibly,
+and refuses to run without either explicit codes or `--all`. If you were asked
+to accept something, accept it. If you were asked to accept it *and tell them*,
+do both.
+
+**`notify` is not how you email people.** It announces a decision. For a
+deadline change or a nag about paperwork, use `conf mail` / `POST /e/<event>/mail`
+with a named audience. `conf audiences <event>` lists them with their sizes.
+
+**A session needs BOTH approval and publication to be public.** Setting
+`published` alone does nothing; the database refuses it and tells you why.
+Approve the content first, then publish.
+
+**`/api/events/<event>/agenda` is not a public feed.** It is organizer data: no
+CORS header, and it includes accepted sessions that are unapproved and
+unannounced. The public, cross-origin feed is `/embed/<event>/<slug>`, and an
+embed records its own format -- so a JSON feed means *creating* one with
+`format=json`. The extension on the URL is cosmetic and converts nothing.
+
+## Counting
 
 `conf tasks` prints one row per task, so seven people owing three things each is
-twenty rows. To count *people*, read the audience size above rather than
-de-duplicating that table by eye.
+twenty rows. Every list states its own count on the last line; read that rather
+than piping to `wc -l`, which counts the header too.
 
 ## Files worth reading, and one to skip
 
