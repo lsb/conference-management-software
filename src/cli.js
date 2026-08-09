@@ -239,14 +239,30 @@ const COMMANDS = {
 
     const rows = db.prepare(
       `SELECT s.code, s.status, s.title, t.name AS track,
+              CASE
+                WHEN s.status NOT IN ('accepted', 'accept_queue') THEN ''
+                WHEN s.starts_at IS NULL OR s.room_id IS NULL THEN 'no slot'
+                ELSE date(s.starts_at) || ' ' || r.name
+              END AS slot,
               (SELECT group_concat(p.first_name || ' ' || p.last_name, ', ')
                  FROM submission_participant sp JOIN person p ON p.id = sp.person_id
                 WHERE sp.submission_id = s.id) AS speakers
-         FROM submission s LEFT JOIN track t ON t.id = s.track_id
+         FROM submission s
+         LEFT JOIN track t ON t.id = s.track_id
+         LEFT JOIN room r ON r.id = s.room_id
         WHERE ${where.join(' AND ')} ORDER BY s.code`,
     ).all(...params);
 
-    return output(args, rows, 'No submissions match.', 'submission');
+    output(args, rows, 'No submissions match.', 'submission');
+
+    if (!args.json) {
+      const missing = rows.filter((r) => r.slot === 'no slot').length;
+      if (missing > 0) {
+        console.log(`${missing} accepted session(s) have no slot`
+          + `  ->  conf autoschedule ${event.slug}`);
+      }
+    }
+    return 0;
   },
 
   show(db, args) {
