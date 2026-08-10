@@ -12,7 +12,7 @@
 # The session count is read from the database rather than written down here, so
 # this stays correct as the seed changes.
 answer=$(cat)
-base=http://127.0.0.1:8080
+base="${BASE_URL:-http://127.0.0.1:8080}"
 event=manzanita-2026
 
 expected=$(sqlite3 data/conference.db \

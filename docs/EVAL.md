@@ -77,6 +77,18 @@ Each attempt gets a freshly minted token (`eval/mint-token.js`) and a fresh
 empty working directory under `eval/runs/<timestamp>/`, so attempt N cannot
 coast on attempt N-1. Prompts use `{{BASE_URL}}` and `{{TOKEN}}` placeholders.
 
+**The model may be remote; the harness may not.** `BASE_URL` moves where the
+*model* points, and that part works. But the checkers read ground truth out of
+`data/conference.db` with `sqlite3`, and `setup.sh` re-seeds by running
+`npm run seed` -- so the harness has to be on the same machine as the app, with
+the repository beside it. Pointing it at somebody else's deployment would score
+against the wrong database and try to re-seed a conference that is not yours.
+
+That is a deliberate trade rather than an oversight. Ground truth taken from the
+database cannot be fooled by the app agreeing with itself, which is the whole
+reason the checkers read it directly. Certifying a *remote* deployment is what
+`npm run test:http` is for -- it imports nothing and reads no database.
+
 ### Watching one
 
 The server's own log is the other half of the trace, and says what the model was
