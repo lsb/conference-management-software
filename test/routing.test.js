@@ -500,3 +500,39 @@ test('a conditional question and a routing rule compare an answer the same way',
       `${operator} should mean the same thing in both places`);
   }
 });
+
+// --- the wipe -----------------------------------------------------------------
+
+test('a routing rule does not stop the database being reset', async () => {
+  // `npm run seed` empties every table before rebuilding. Turning foreign keys
+  // off does not turn triggers off, and the trigger protecting a review round
+  // from deletion while a rule assigns to it aborted the wipe half-way. The
+  // demo could not be reset, and eval attempts silently ran on the previous
+  // attempt's state.
+  //
+  // Whether it fired at all came down to spelling: the wipe went in alphabetical
+  // order, `evaluation_plan` sorts before `event`, so rounds were removed while
+  // events still existed and the trigger's "unless the whole event is going"
+  // guard still held.
+  const app = newApp();
+  const { event, form } = await conference(app);
+  const plan = await reviewRound(app, event, { reviewers: ['ann@example.com'] });
+  await post(app, `/e/${event}/forms/${form}/routing`, {
+    field: 'track', operator: 'equals', value: 'retrieval', plan, track: 'retrieval',
+  });
+  assert.equal(app.db.prepare('SELECT count(*) AS n FROM form_routing_rule').get().n, 1);
+
+  // What wipe() does: events first, so every guard is false, then everything.
+  const tables = app.db.prepare(
+    `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND name NOT LIKE 'sqlite_%' AND name <> 'schema_migration' ORDER BY name`,
+  ).all().map((r) => r.name);
+
+  app.db.exec('PRAGMA foreign_keys = OFF');
+  app.db.exec('DELETE FROM event');
+  for (const name of tables) app.db.exec(`DELETE FROM ${name}`);
+  app.db.exec('PRAGMA foreign_keys = ON');
+
+  assert.equal(app.db.prepare('SELECT count(*) AS n FROM form_routing_rule').get().n, 0);
+  assert.equal(app.db.prepare('SELECT count(*) AS n FROM event').get().n, 0);
+});

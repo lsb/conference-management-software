@@ -109,6 +109,27 @@ function wipe() {
   ).all().map((r) => r.name);
 
   db.exec('PRAGMA foreign_keys = OFF');
+
+  // Events first, and this is load-bearing rather than tidy.
+  //
+  // Turning foreign keys off does not turn triggers off, and several tables are
+  // protected by BEFORE DELETE triggers that refuse to let you remove something
+  // another row depends on -- a review round a routing rule assigns to, a task
+  // definition somebody has completed. Each of those triggers is guarded with
+  // "unless the whole event is going", which is what lets a conference be
+  // deleted in one piece.
+  //
+  // The loop below runs in alphabetical order, so whether a guard is still true
+  // when its table's turn comes is pure luck about spelling: `evaluation_plan`
+  // sorts before `event`, so rounds were deleted while events still existed, the
+  // guard held, and the trigger aborted the wipe. `npm run seed` then failed
+  // half-done, and because eval setup sends its output to /dev/null, every
+  // attempt after the first ran against whatever the last one left behind.
+  //
+  // Deleting the events first makes every one of those guards false, so no
+  // protective trigger can fire for the rest of the wipe, whatever order it
+  // happens in.
+  db.exec('DELETE FROM event');
   for (const name of tables) db.exec(`DELETE FROM ${name}`);
   db.exec('PRAGMA foreign_keys = ON');
 }
