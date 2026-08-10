@@ -228,3 +228,96 @@ otherwise does precisely nothing and you find out from an empty website.
   It is the most expensive item in the first feature.
 - File uploads are currently recorded by name rather than stored. Real storage is
   straightforward but needs a decision about where bytes live.
+
+---
+
+## 2026-08-10 — Two interfaces, one of them imaginary
+
+The day started with a question about state and ended with most of the app's
+write paths rewritten. The thread running through it: **a write that is correct
+in a browser and destructive over curl**, five separate times.
+
+`conf schedule` wrote room and time straight onto the row. The web form did the
+same and then sent the calendar invite. So moving a talk from the command line
+left every speaker holding the old time, silently. CLAUDE.md claimed the two
+interfaces "call the same core functions, so they never disagree"; they shared
+`conflictsForSlot`, which is agreement about what a clash is, not about what
+happens when there isn't one.
+
+Then the same shape four more times. The schedule route wrote `published` on
+every save from a checkbox, and an unchecked checkbox posts nothing — so a curl
+caller moving a talk to a new time took it off the public agenda. Form settings
+were a full replace, so renaming a form over curl wiped its welcome text, its
+close date, and both of the things the customer marked hardest. The JSON
+`notify` still meant "everybody" on an empty body, which is Run 4's incident
+with a different verb. And the submit handler minted one magic-link token, put
+it on the success page, put the same one in the confirmation email, and then
+spent it to sign the submitter in — so **the link in the confirmation email
+never worked**, for anybody, ever.
+
+That last one is the one to sit with. It is the customer's "must have" and their
+"make sure this works", and it was invisible to every kind of testing we had.
+In-process the token round-trips fine. By hand you land in your portal, because
+the same response sets a cookie. It only fails tomorrow, in somebody else's
+inbox, where nobody is watching. What found it was a black-box suite that talks
+to a running server over HTTP and nothing else — no imports from `src/` — which
+is now `npm run test:http`.
+
+### The exemption that hid the rest
+
+`canOrganize()` returned true whenever `HOST` was loopback. That made this two
+products: wide open on a laptop, entirely shut on any public address, and only
+the first was ever exercised. The deployed behaviour was the untested one.
+
+It was not merely permissive, it was concealing. Three `/api` routes answered
+strangers regardless — including the agenda, which carries unannounced
+acceptances. `POST /e/new` was unauthenticated. There was no CSRF defence at
+all, which combined with open loopback access was exploitable on every
+developer's machine by any web page they visited. And `/login` — the only door a
+browser-driven evaluator can use — had been **completely broken for months**,
+every persona naming an address no seed creates, because local development never
+has to sign in.
+
+Authorization is now a database fact and there is no branch anywhere that asks
+what interface the server is bound to. The test suite passes identically under
+`npm test` and `HOST=0.0.0.0 npm test`, which is the property worth keeping: if
+those ever diverge again, something has grown a dependency on how the server was
+started.
+
+Trust on first use, with one gate. The first person to present the setup token
+claims the instance and blesses everybody else. The gate is there because a
+deployment's URL is public before anybody has claimed it.
+
+Which promptly produced its own lesson: a fresh instance **could not be claimed
+at all**. The claim deleted the operator's only copy of the token and then failed
+on a constraint, leaving nothing that could ever claim it again. Found by
+standing one up by hand. A side effect that destroys somebody's only credential
+belongs after the step that might fail, never before it.
+
+### Asking the harder question
+
+The eval suite has always run the model inside the repository, where it has
+`AGENTS.md`, `bin/conf`, and the source. That measures whether somebody handed
+the project can operate it, which is not the situation anybody meets a
+deployment in. `node eval/run-eval.js --http` runs the same tasks from an empty
+directory with nothing but a URL and a token.
+
+First result: `count-pending` passed 3 of 4, and both good traces show the model
+fetching `/llms.txt` first, unprompted. The failure curled all 25KB of it, read
+every one of 167 routes, and ran out of clock with nothing to say — Run 1's
+`seed.js` problem with our own documentation as the trap. Completeness and
+readability turned out to be different properties and the file only had the
+first.
+
+The first fix was wrong in a way worth recording: it put the route list behind
+`?brief=1`, and the only place saying that option exists was inside the file you
+had to read to find it. An option you learn about by paying its cost is not an
+option. The short form is now the default.
+
+A later trace showed a model guess `POST .../submissions/SESS-15/accept`, get a
+bare 404, go and read llms.txt, and come back with `/decide` a round trip later.
+The router now suggests near misses, which `bin/conf` has done since Run 8.
+
+Every one of these was found by watching something small and stubborn try to use
+the app, and not one would have been found by a unit test. The suite went from
+189 tests to 336 in the process, and the tests are not what found any of it.
