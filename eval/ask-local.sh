@@ -43,10 +43,21 @@ PROMPT="$*"
 # USABILITY-LOG.md stop meaning anything, so the harness refuses to overlap.
 LOCK="${TMPDIR:-/tmp}/conference-local-model.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  echo "error: another local-model run holds $LOCK" >&2
-  echo "hint: wait for it to finish, or remove the lock if it is stale" >&2
-  exit 75
+  # Is it a live run, or one that was killed before its trap could fire? The
+  # second is common -- interrupting a suite leaves the directory behind, and
+  # every later attempt then dies in zero seconds with nothing to show for it.
+  holder=$(cat "$LOCK/pid" 2>/dev/null || true)
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+    echo "note: clearing a lock held by pid $holder, which is gone" >&2
+    rm -rf "$LOCK"
+    mkdir "$LOCK" 2>/dev/null || { echo "error: could not take $LOCK" >&2; exit 75; }
+  else
+    echo "error: another local-model run holds $LOCK${holder:+ (pid $holder)}" >&2
+    echo "hint: wait for it to finish, or remove the lock if it is stale" >&2
+    exit 75
+  fi
 fi
+echo $$ > "$LOCK/pid"
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 timeout "$TIMEOUT" \

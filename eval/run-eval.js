@@ -199,6 +199,20 @@ for (const task of tasks) {
     const trace = existsSync(tracePath) ? readFileSync(tracePath, 'utf8') : '';
     const toolCalls = (trace.match(/^\s*(?:\x1b\[[0-9;]*m)*\s*[$%]/gm) ?? []).length;
 
+    // The harness could not start, which is not a verdict about anything.
+    //
+    // ask-local.sh exits 75 when another run holds its lock, and a lock left
+    // behind by a killed run makes every attempt exit in zero seconds. The stall
+    // rule absorbed that: three silent retries per task, then "FAIL: 0 of 0
+    // attempts" for all eight, which reads exactly like the app failing when
+    // nothing had run at all. Retrying cannot help -- a held lock is a condition
+    // of the machine, not of this attempt -- so stop and say so.
+    if (run.status === 75 || (seconds < 5 && toolCalls === 0 && run.status !== 0)) {
+      console.error(`\n  the harness could not start: ${(run.stderr ?? '').trim() || `exit ${run.status}`}`);
+      console.error('  nothing was measured. Fix that and run again.');
+      process.exit(70);
+    }
+
     if (toolCalls === 0 && answer === '') {
       stalls++;
       // Keep the evidence. The retry reuses this attempt number and would
