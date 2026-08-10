@@ -558,10 +558,10 @@ test('the entry point says where the documentation is', async () => {
   assert.equal(entry.status, 200, 'the entry point must answer without credentials');
   const body = JSON.parse(entry.body);
   assert.match(body.docs, /\/llms\.txt$/, 'and it must say where the instructions are');
-  assert.match(body.docs_all_routes, /\/llms\.txt\?all=1$/,
-    'the full route list must be a URL to copy, not an instruction to build one: '
-    + 'a reader told to "add ?all=1" appends it to whatever it is holding, and one '
-    + 'wrote it unquoted into a shell where zsh globbed the ? and ate the request');
+  assert.equal(body.docs_all_routes, undefined,
+    'exactly one pointer, to the short form. Offering the 25KB route table beside '
+    + 'the 6KB recipes as a peer got the expensive one picked, and the short form '
+    + 'names the full list itself for the rare caller who needs it');
 });
 
 test('what needs attention comes back as sentences with somewhere to go', async () => {

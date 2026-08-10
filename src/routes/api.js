@@ -208,11 +208,21 @@ function listEvents(ctx) {
   //
   // Testable rather than obvious: if the pass rate does not move, the ordering
   // idea is wrong and should be recorded as wrong.
+  // ONE pointer, to the short form. Not two.
+  //
+  // The first version offered `docs` and `docs_all_routes` side by side, and an
+  // attempt took the second: twenty-five kilobytes of route table instead of six
+  // of worked examples, then ran out of room and answered with the wrong URL.
+  // Two options presented as peers, one of them four times more expensive, is an
+  // invitation to pick the expensive one -- and the short form already names the
+  // full list in its closing lines, for the rare caller who needs it.
+  //
+  // The cure for "add ?all=1" was to hand over whole URLs. The cure for that
+  // turned out to need a limit on how many.
   return json({
     docs: `${ctx.origin}/llms.txt`,
-    docs_all_routes: `${ctx.origin}/llms.txt?all=1`,
-    docs_note: 'Start at `docs`: how to authenticate, and a worked example of each '
-      + 'common job. `docs_all_routes` is every route this app serves.',
+    docs_note: 'How to authenticate, and a worked example of each common job. '
+      + 'Read this before guessing at routes.',
     events: events.map(eventShape),
   });
 }
