@@ -45,6 +45,9 @@ const HTTP_MODE = process.argv.includes('--http');
 const TASKS_DIR = join(EVAL_DIR, HTTP_MODE ? 'tasks-http' : 'tasks');
 const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8080').replace(/\/+$/, '');
 
+/** How many no-tool-call stalls to absorb per task before calling it a day. */
+const MAX_STALLS = Number(process.env.EVAL_MAX_STALLS ?? 3);
+
 if (REQUIRED > ATTEMPTS) {
   console.error(`cannot require ${REQUIRED} passes out of ${ATTEMPTS} attempts`);
   process.exit(64);
@@ -92,6 +95,7 @@ for (const task of tasks) {
   const attempts = [];
   let passes = 0;
   let failures = 0;
+  let stalls = 0;
 
   for (let n = 1; n <= ATTEMPTS; n++) {
     // Stop once the verdict cannot change: enough passes to succeed, or enough
@@ -151,6 +155,24 @@ for (const task of tasks) {
     const seconds = Math.round((Date.now() - began) / 1000);
     const answer = (run.stdout ?? '').trim();
 
+    // An attempt that made no tool call at all is a stalled model, not a verdict
+    // about the app, and counting it as a failure quietly turns the score into
+    // part measurement and part weather. We have watched this twice: 900
+    // seconds, 120 bytes of trace, not one request. It is loud rather than
+    // silent -- it prints, and it is capped -- because a harness that hides its
+    // own flakiness is worse than one that is flaky.
+    const trace = existsSync(tracePath) ? readFileSync(tracePath, 'utf8') : '';
+    const toolCalls = (trace.match(/^\s*(?:\x1b\[[0-9;]*m)*\s*[$%]/gm) ?? []).length;
+
+    if (run.status !== 0 && toolCalls === 0 && answer === '') {
+      stalls++;
+      process.stdout.write(`  attempt ${n}: STALLED (${seconds}s, no tool calls) - not counted`
+        + `${stalls >= MAX_STALLS ? ', giving up on this task' : ', retrying'}\n`);
+      if (stalls >= MAX_STALLS) break;
+      n--;                       // this attempt did not happen
+      continue;
+    }
+
     let ok = false;
     let detail = '';
     if (run.status !== 0) {
@@ -173,9 +195,10 @@ for (const task of tasks) {
 
   const passed = passes >= REQUIRED;
   process.stdout.write(`  => ${passed ? 'PASS' : 'FAIL'}: `
-    + `${passes} of ${attempts.length} attempt(s) succeeded, ${REQUIRED} of ${ATTEMPTS} required\n`);
+    + `${passes} of ${attempts.length} attempt(s) succeeded, ${REQUIRED} of ${ATTEMPTS} required`
+    + `${stalls > 0 ? `, ${stalls} stall(s) not counted` : ''}\n`);
 
-  results.push({ task, passed, passes, attempts, prompt });
+  results.push({ task, passed, passes, attempts, prompt, stalls });
 }
 
 const passedCount = results.filter((r) => r.passed).length;
