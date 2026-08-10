@@ -642,3 +642,30 @@ test('the event carries every slug you need before you can act', async () => {
   assert.ok(body.review_rounds.length > 0, 'and review rounds, to route to');
   assert.ok(body.review_rounds[0].slug, 'each with the slug the form expects');
 });
+
+test('every slug a write requires travels on the event', async () => {
+  // Learned one prerequisite at a time, expensively. Creating a routing rule
+  // needs a form slug and a review-round slug; both were reachable only by
+  // fetching an organizer page and reading them out of the HTML. Two separate
+  // attempts did exactly that, pulled a page of forms into a context with no
+  // room for it, and timed out holding the answer they had gone to find.
+  //
+  // So this asserts the rule rather than the instances: if a route requires you
+  // to name something before it will act, the name is on the event.
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/evaluation`, { name: 'First Round (ML)' });
+  await post(app, `/e/${slug}/forms`, { internal_name: 'CFP 2027', with_defaults: '1' });
+
+  const body = JSON.parse((await get(app, `/api/events/${slug}`)).body);
+
+  for (const [what, why] of [
+    ['rooms', 'named before a session can be scheduled'],
+    ['tracks', 'named when sorting or routing a proposal'],
+    ['review_rounds', 'named when routing a proposal to a review round'],
+    ['forms', 'named in the URL of every form-scoped write'],
+  ]) {
+    assert.ok(Array.isArray(body[what]) && body[what].length > 0,
+      `${what} should be on the event: ${why}`);
+    assert.ok(body[what][0].slug, `and each ${what} entry needs its slug`);
+  }
+});

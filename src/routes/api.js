@@ -256,6 +256,20 @@ function getEvent(ctx) {
     'SELECT slug, name, round FROM evaluation_plan WHERE event_id = ? ORDER BY round, id',
   ).all(event.id);
 
+  // And the forms, for the same reason again. Adding review rounds fixed the
+  // first prerequisite a routing rule needs and the next attempt hit the second
+  // one step later: POST /e/<event>/forms/<form>/routing wants a form slug, and
+  // /api/events/<event>/forms was a 404, so it fell back to scraping two HTML
+  // pages and ran out of time.
+  //
+  // The rule this converges on: every slug that is required to make a write
+  // travels on the event. Discovering an identifier by parsing a web page is not
+  // discovery, and neither is discovering it by failing a request on purpose.
+  const forms = ctx.db.prepare(
+    `SELECT slug, internal_name, close_at FROM form
+      WHERE event_id = ? AND kind = 'submission' ORDER BY id`,
+  ).all(event.id);
+
   const counts = statusCounts(ctx.db, event.id);
   const conflicts = findConflicts(ctx.db, event.id);
   const outstanding = outstandingTasks(ctx.db, event.id);
@@ -298,6 +312,12 @@ function getEvent(ctx) {
     rooms: rooms.map((r) => ({ slug: r.slug, name: r.name, capacity: r.capacity ?? null })),
     tracks: tracks.map((t) => ({ slug: t.slug, name: t.name })),
     review_rounds: rounds.map((r) => ({ slug: r.slug, name: r.name, round: r.round })),
+    forms: forms.map((f) => ({
+      slug: f.slug,
+      name: f.internal_name,
+      closes_at: f.close_at ?? null,
+      submit_at: `${ctx.origin}/submit/${event.slug}/${f.slug}`,
+    })),
   });
 }
 
