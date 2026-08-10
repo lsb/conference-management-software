@@ -138,7 +138,14 @@ export class Client {
     const sent = { ...headers };
     const cookie = this.jar.header();
     if (cookie) sent.cookie = cookie;
+
+    // The server refuses a cookie-authenticated write that carries neither
+    // Origin nor Sec-Fetch-Site, because that is what a cross-site form post
+    // looks like. A browser always sends one; Node's fetch sends neither, so we
+    // stand in for the browser. `origin` is still overridable per call, which is
+    // how the cross-origin tests prove the check actually bites.
     if (origin) sent.origin = origin;
+    else if (cookie) sent.origin = BASE_URL;
 
     let lastError = null;
     for (let attempt = 0; attempt <= RETRIES; attempt++) {
@@ -410,25 +417,45 @@ export async function waitForServer(client) {
  *
  * Returns how it got in, for the record and for failure messages.
  */
+/**
+ * Get an organizer session, by whichever door this deployment has open.
+ *
+ * Ordered by how much it proves. A real password sign-in is the path an actual
+ * organizer walks and works on any deployment; the demo personas only exist
+ * where DEMO_LOGIN is set, and asking a deployment to enable them just so a test
+ * can run is weakening the thing under test.
+ *
+ *   ACCEPTANCE_ORGANIZER_EMAIL + ACCEPTANCE_ORGANIZER_PASSWORD   POST /sign-in
+ *   ACCEPTANCE_SETUP_TOKEN (+ the same email/password)           POST /setup/claim
+ *   nothing configured                                           POST /login persona=organizer
+ */
 export async function signInAsOrganizer(client) {
-  const email = process.env.ACCEPTANCE_ORGANIZER_EMAIL;
+  const email = process.env.ACCEPTANCE_ORGANIZER_EMAIL ?? 'naomi.okafor@example.com';
+  const password = process.env.ACCEPTANCE_ORGANIZER_PASSWORD ?? 'conference-demo-password';
+  const setupToken = process.env.ACCEPTANCE_SETUP_TOKEN;
 
-  if (email) {
-    const result = await client.postForm('/login', { email });
-    if (result.status === 303) return { signedIn: true, how: `POST /login as ${email}` };
+  const bySignIn = await client.postForm('/sign-in', { email, password });
+  if (bySignIn.status === 303) return { signedIn: true, how: `POST /sign-in as ${email}` };
+
+  // A fresh deployment nobody has claimed: the setup token is the only way in,
+  // and claiming is idempotent, so this is safe to run on every pass.
+  if (setupToken) {
+    const claimed = await client.postForm('/setup/claim', { token: setupToken, email, password });
+    if (claimed.status === 303) return { signedIn: true, how: `POST /setup/claim as ${email}` };
     return {
       signedIn: false,
-      how: `POST /login as ${email} was refused`,
-      detail: readableBody(result, 300),
+      how: `POST /setup/claim as ${email} was refused`,
+      detail: readableBody(claimed, 300),
     };
   }
 
-  const result = await client.postForm('/login', { persona: 'organizer' });
-  if (result.status === 303) return { signedIn: true, how: 'POST /login persona=organizer' };
+  const byPersona = await client.postForm('/login', { persona: 'organizer' });
+  if (byPersona.status === 303) return { signedIn: true, how: 'POST /login persona=organizer' };
 
   return {
     signedIn: false,
-    how: 'nobody: POST /login persona=organizer did not sign in',
-    detail: readableBody(result, 300),
+    how: `no door open: /sign-in refused ${email}, no ACCEPTANCE_SETUP_TOKEN, `
+      + 'and /login is disabled (it needs DEMO_LOGIN=1)',
+    detail: readableBody(byPersona, 300),
   };
 }

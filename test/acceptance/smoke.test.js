@@ -95,10 +95,15 @@ describe(`liveness and the route table (${BASE_URL})`, () => {
     assert.ok(slug, 'need at least one event to check the CORS posture of the organizer API');
 
     const agenda = await anyone.get(`/api/events/${slug}/agenda`, { origin: 'https://example.org' });
-    expectStatus(agenda, 200);
+
+    // This used to assert 200-with-no-CORS-header, which was the best it could
+    // do while the route answered anybody who asked. It is now refused outright,
+    // which is the stronger claim: the data carries unapproved and unannounced
+    // sessions, so a stranger should not get it with or without a CORS header.
+    expectStatus(agenda, 403,
+      `/api/events/${slug}/agenda answered a stranger. It carries unapproved and `
+      + 'unannounced sessions. The public feed is /embed/<event>/<slug>.');
     assert.equal(agenda.headers.get('access-control-allow-origin'), null,
-      `/api/events/${slug}/agenda answered a cross-origin request with an allow-origin header. `
-      + 'It carries unapproved and unannounced sessions and must not be readable from another site; '
-      + 'the public feed is /embed/<event>/<slug>.');
+      'and it must not invite another site to read the refusal either');
   });
 });

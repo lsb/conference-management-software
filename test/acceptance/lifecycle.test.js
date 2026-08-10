@@ -364,25 +364,6 @@ describe(`conference lifecycle over HTTP (${BASE_URL})`, () => {
       `expected a list of tasks, got ${readableBody(api, 300)}`);
   });
 
-  // KNOWN GAP, and why this is todo rather than absent.
-  //
-  // A task only exists if a `task_definition` row does, and the only thing in
-  // this codebase that writes one is src/seed.js. No HTTP route and no CLI verb
-  // creates one, so an event built entirely over HTTP -- like this one -- can
-  // never assign a speaker anything, and the tasks, reminders and file-collection
-  // features are unreachable from a fresh event. Nothing here can be fixed by
-  // the test; the app needs a route.
-  it('a speaker can complete a task they have been set', { todo: 'known gap: no HTTP route creates a task definition, so a new event can never have tasks' }, async () => {
-    const event = required(state.event, 'an event');
-    const speaker = required(state.speakerClient, 'a signed-in speaker');
-
-    const tasks = await speaker.get(`/portal/${event}/tasks`);
-    const id = extract(tasks, /\/tasks\/(\d+)\/complete/, 'a task to complete in the speaker portal');
-
-    const done = await speaker.postForm(`/portal/${event}/tasks/${id}/complete`, {});
-    expectRedirect(done, { note: 'marking a task done' });
-  });
-
   // -------------------------------------------------------------------------
   // 5. Deciding, and then -- separately -- telling
   // -------------------------------------------------------------------------
@@ -513,6 +494,105 @@ describe(`conference lifecycle over HTTP (${BASE_URL})`, () => {
   });
 
   // -------------------------------------------------------------------------
+  // 5b. Asking accepted speakers for things
+  //
+  // After the acceptance, deliberately. An `on_accept` task is given to
+  // everybody already accepted as well as to future acceptances, and that
+  // retroactive half is the part worth proving: an organizer who adds "sign the
+  // AV form" six weeks after the last acceptance email must not get a task that
+  // silently applies to nobody.
+  //
+  // This was a known gap and is the clearest thing this suite has bought. A task
+  // exists only if a `task_definition` row does, and for a long time the only
+  // thing that wrote one was src/seed.js -- so an event built entirely over HTTP,
+  // like this one, could never ask a speaker for anything, and tasks, reminders,
+  // file collection and the who-owes-what dashboard were all unreachable. No
+  // test could fix that; the app needed a route, and now has one.
+  // -------------------------------------------------------------------------
+
+  it('an organizer can ask accepted speakers for something', async () => {
+    const event = required(state.event, 'an event');
+
+    // Two, because the two shapes complete differently and both are in the
+    // brief: an agreement you tick, and a deck you upload.
+    const agreement = await organizer.postForm(`/e/${event}/tasks/definitions`, {
+      title: 'Confirm you are still coming',
+      applies_to: 'person',
+      requirement: 'acknowledge',
+      assign_when: 'on_accept',
+      required: '1',
+    });
+    expectRedirect(agreement, { note: 'creating an acknowledge task' });
+
+    const slides = await organizer.postForm(`/e/${event}/tasks/definitions`, {
+      title: 'Upload your slides',
+      applies_to: 'submission',
+      requirement: 'file',
+      assign_when: 'on_accept',
+      required: '1',
+      instructions: 'A PDF is fine.',
+    });
+    expectRedirect(slides, { note: 'creating a file task' });
+
+    const definitions = await organizer.get(`/e/${event}/tasks/definitions`);
+    expectStatus(definitions, 200);
+    expectBodyContains(definitions, 'Upload your slides',
+      'a task that was just created should be listed');
+
+    const outstanding = await organizer.get(`/api/events/${event}/tasks`);
+    expectStatus(outstanding, 200);
+    assert.ok(outstanding.json().count > 0,
+      'a task added after the acceptances must still reach the people already accepted, '
+      + 'or an organizer gets a dashboard reading zero and no hint why');
+  });
+
+  it('a speaker can tick off a task they have been set', async () => {
+    const event = required(state.event, 'an event');
+    const speaker = required(state.speakerClient, 'a signed-in speaker');
+
+    const tasks = await speaker.get(`/portal/${event}/tasks`);
+    expectBodyContains(tasks, 'Confirm you are still coming',
+      'the task the organizer just created should be waiting in the speaker portal');
+
+    // The acknowledge task, specifically: its form is the one with nothing to
+    // attach. Picking "the first complete link on the page" would silently start
+    // testing whichever task happens to sort first.
+    const id = extract(tasks,
+      /Confirm you are still coming[\s\S]{0,900}?\/tasks\/(\d+)\/complete/,
+      'the acknowledge task in the speaker portal');
+
+    const done = await speaker.postForm(`/portal/${event}/tasks/${id}/complete`, {});
+    expectRedirect(done, { note: 'ticking off an acknowledge task' });
+  });
+
+  it('a speaker can upload the file a task asks for', async () => {
+    const event = required(state.event, 'an event');
+    const speaker = required(state.speakerClient, 'a signed-in speaker');
+
+    const tasks = await speaker.get(`/portal/${event}/tasks`);
+    const id = extract(tasks,
+      /Upload your slides[\s\S]{0,900}?\/tasks\/(\d+)\/complete/,
+      'the slides task in the speaker portal');
+
+    // A real multipart upload, because that is the only way this is ever done.
+    // FormData and Blob are built into Node; no package, and no hand-rolled
+    // boundary either.
+    const form = new FormData();
+    form.set('upload', new Blob([`%PDF-1.4\nacceptance ${RUN_ID}\n%%EOF\n`],
+      { type: 'application/pdf' }), 'slides.pdf');
+
+    const done = await speaker.request('POST', `/portal/${event}/tasks/${id}/complete`,
+      { body: form, summary: 'uploading a slide deck' });
+    expectRedirect(done, { note: 'a file task is completed by uploading its file' });
+
+    // And the organizer can collect it, which is the point of asking.
+    const files = await organizer.get(`/api/events/${event}/files`);
+    expectStatus(files, 200);
+    assert.ok(JSON.stringify(files.json()).includes('slides.pdf'),
+      'a deck a speaker uploaded should appear in what the organizer can collect');
+  });
+
+  // -------------------------------------------------------------------------
   // 6. The schedule
   // -------------------------------------------------------------------------
 
@@ -638,13 +718,21 @@ describe(`conference lifecycle over HTTP (${BASE_URL})`, () => {
     assert.ok(!JSON.stringify(body).includes(spare),
       'an unpublished session must not leak into the public feed');
 
-    // The organizer view is deliberately not a feed.
+    // The organizer view is deliberately not a feed, and now says so with a 403
+    // rather than by quietly omitting a CORS header. Both assertions matter: the
+    // status is the real defence, the missing header is the belt to its braces.
     const organizerAgenda = await website.get(`/api/events/${event}/agenda`, { origin: 'https://example.org' });
-    expectStatus(organizerAgenda, 200);
+    expectStatus(organizerAgenda, 403,
+      '/api/events/:event/agenda is organizer data: it carries unapproved, unannounced '
+      + 'sessions and must not answer a stranger at all');
     expectNoHeader(organizerAgenda, 'access-control-allow-origin',
-      '/api/events/:event/agenda is organizer data: it carries unapproved, unannounced sessions '
-      + 'and must not be fetchable from another origin');
-    assert.ok(organizerAgenda.body.includes(spare),
+      'and must not invite another origin to read even its refusal');
+
+    // What the stranger cannot see, the organizer can: the same route, signed in,
+    // still carries the session the public feed hides.
+    const asOrganizer = await organizer.get(`/api/events/${event}/agenda`);
+    expectStatus(asOrganizer, 200, 'an organizer must still be able to read their own agenda');
+    assert.ok(asOrganizer.body.includes(spare),
       'the organizer agenda should include what the public feed hides');
   });
 
