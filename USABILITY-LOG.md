@@ -19,6 +19,86 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 10 — 2026-08-10, the fixes worked and I broke something else: 3/6
+
+Same headline as Run 9 and a different composition, which is the whole story.
+
+| Task | Run 9 | Run 10 | |
+| --- | --- | --- | --- |
+| `accept-one` | pass 3/3 | pass 3/3 | |
+| `count-pending` | **FAIL** 2/5 | **pass 3/4** | the fix worked |
+| `find-clash` | **FAIL** 0/3 | **pass 3/4** | the fix worked |
+| `ask-for-release-form` | pass 3/5 | **FAIL** 2/5 | marginal in every run |
+| `who-owes-headshot` | pass 3/3 | **FAIL** 2/5 | I broke this |
+| `json-feed` | FAIL 0/3 | FAIL 0/3 | not the app |
+
+### The fix that worked, and why we know
+
+`find-clash` went from 0/3 to 3/4, and the trace names the mechanism:
+
+    cat .conf-token
+    GET /api/events            <- sees the docs pointer
+    GET /llms.txt              <- follows it
+    GET /api/events/manzanita-2026/conflicts   <- the answer
+
+In Run 9 that task never fetched `llms.txt` at all; it guessed `/api/sessions`
+six times and died. One field on the entry point every caller already uses was
+the difference between a task that could not be done and one that takes three
+requests.
+
+### The regression, which was mine
+
+`who-owes-headshot` had passed 3/3 and went to 2/5. The `docs_note` I added in
+the same commit ended "Add ?all=1 for every route this app serves" -- the exact
+shape I had fixed in the 404 hint one commit earlier, rewritten verbatim.
+
+Readers attached `?all=1` to whatever they were holding. Then one wrote
+`curl ... /api/speakers?all=1` unquoted into zsh, which globbed the `?` and
+refused to run it. The request never left the machine, so our 404 and the route
+suggestion built for exactly that guess never fired, and the model invented
+three speakers who do not exist in the seed.
+
+An instruction that induces a broken command costs the mistake *and* the chance
+to catch it. Hand over whole URLs. `docs` and `docs_all_routes` now, and the
+same shape is gone from the llms.txt header and the route doc string.
+
+### Finding 2, for the third time
+
+`who-owes-headshot`'s other two failures were "5 of 6 surnames" -- word for word
+what Run 3 recorded. It fetched the task list unfiltered, twenty rows of four
+kinds, and filtered by eye. `?task=headshot` exists and llms.txt documents it;
+the model had read llms.txt.
+
+`conf tasks` did this in Run 3. The submission list did it this morning. Now the
+JSON. Each time the answer was present and had to be extracted carefully, and
+each time the fix is the same: put it in the reply. The task list now carries
+`by_task` counts and a whole URL per kind.
+
+### The one failure that is not ours
+
+`json-feed`, 0/3 again, and worth writing down because the app did its part.
+Attempt 1 followed the pointer to llms.txt, found the recipe, and produced
+exactly the right command and exactly the right resulting URL -- in prose. It
+never ran it. Asked to "set that up and tell them the URL", it wrote
+instructions instead of executing them.
+
+EVAL.md says to treat every failure as a bug in the app first and a limitation
+of the model only after looking. We looked. There is no change to this app that
+makes a model press the button. Recorded as a characteristic: this model
+narrates rather than acts far more readily when the action is an HTTP POST than
+when it is a command.
+
+### A measurement I nearly got wrong
+
+Diagnosing `json-feed` I grepped the trace for POST calls and counted eleven,
+and was one sentence from reporting that eleven embed creations had failed.
+They were POST examples *inside* the llms.txt document the model had fetched.
+Counting only lines that were tool invocations: zero. A trace contains
+everything the app said as well as everything the model did, and a grep cannot
+tell them apart.
+
+---
+
 ## Run 9 — 2026-08-10, the first honest blank-directory run: 3/6
 
 A new suite. `node eval/run-eval.js --http` runs the model in an empty directory
