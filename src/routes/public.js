@@ -381,9 +381,19 @@ function postCfp(ctx) {
   // the submission rather than costing a stranger their proposal.
   if (!asDraft) routeSubmission(ctx.db, submission.id, { actorPersonId: person.id });
 
-  const token = createMagicLink(ctx.db, person.id, event.id);
+  // Two links, deliberately, and this is worth the words because one link was a
+  // bug that hid perfectly. A single token used to be minted here, put in the
+  // confirmation email AND on the success page, and then spent below to sign the
+  // submitter straight in. Spending it invalidated both copies. By hand nobody
+  // noticed, because the same response already carries a session cookie -- you
+  // are looking at your portal, so the product appears to work. The speaker who
+  // comes back tomorrow and clicks the link in their inbox gets 410 Gone.
+  //
+  // `keepToken` is theirs to keep. `signInToken` is spent immediately.
+  const keepToken = createMagicLink(ctx.db, person.id, event.id);
+  const signInToken = createMagicLink(ctx.db, person.id, event.id);
   const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
-  const portalUrl = `${base}/portal/${event.slug}/enter?token=${token}`;
+  const portalUrl = `${base}/portal/${event.slug}/enter?token=${keepToken}`;
 
   // A draft has not been submitted, so there is nothing to confirm. Sending
   // "we have your proposal" for something the organizers cannot see would be a
@@ -412,8 +422,9 @@ function postCfp(ctx) {
 
   // Sign them straight in. Making somebody who just typed their whole biography
   // go and find an email before they can see what they sent is the friction this
-  // product exists to remove.
-  const session = consumeMagicLink(ctx.db, token);
+  // product exists to remove. This spends `signInToken`; the link in their inbox
+  // is a different one and stays good.
+  const session = consumeMagicLink(ctx.db, signInToken);
 
   // A draft goes straight back to its own editor: the next thing its author
   // wants is to keep writing, not a receipt.
@@ -435,7 +446,7 @@ function postCfp(ctx) {
       <h1>Thank you</h1>
       ${form.success_message ? html`<div>${raw(form.success_message)}</div>`
         : html`<p>We have your proposal. Its reference is <code>${submission.code}</code>.</p>`}
-      <p><a class="button" href="/portal/${event.slug}/enter?token=${token}">Go to your speaker portal</a></p>
+      <p><a class="button" href="/portal/${event.slug}/enter?token=${keepToken}">Go to your speaker portal</a></p>
     `,
   }), session ? { headers: { 'set-cookie': cookieHeader(SESSION_COOKIE, session.token) } } : {});
 }

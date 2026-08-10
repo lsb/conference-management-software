@@ -210,19 +210,43 @@ test('a close date today still lets somebody submit', async () => {
   assert.equal(app.db.prepare("SELECT count(*) AS n FROM submission WHERE title = 'Just in time'").get().n, 1);
 });
 
-test('a settings post with an unticked box turns that setting off', async () => {
+test('a settings post from the form with an unticked box turns that setting off', async () => {
   // Standard form semantics: a checkbox that is not sent is off. Worth pinning,
   // because the alternative -- only updating what was sent -- would make it
   // impossible to ever untick anything.
+  //
+  // Both halves of that dilemma are real, and `settings_form` is how the form
+  // says which one applies: it means "this post carries every checkbox I have",
+  // so the missing ones are unticked. A post without it is a partial save and
+  // leaves them alone. See the test below, and updateForm in formbuilder.js.
   const app = newApp();
   const { slug, form } = await eventWithForm(app);
+  const enabled = () => app.db.prepare(
+    'SELECT send_confirmation_email AS enabled FROM form WHERE slug = ?').get(form).enabled;
 
   await post(app, `/e/${slug}/forms/${form}/settings`,
-    { internal_name: 'CFP', send_confirmation_email: '1' });
-  assert.equal(app.db.prepare('SELECT send_confirmation_email AS enabled FROM form WHERE slug = ?').get(form).enabled, 1);
+    { internal_name: 'CFP', settings_form: '1', send_confirmation_email: '1' });
+  assert.equal(enabled(), 1);
 
-  await post(app, `/e/${slug}/forms/${form}/settings`, { internal_name: 'CFP' });
-  assert.equal(app.db.prepare('SELECT send_confirmation_email AS enabled FROM form WHERE slug = ?').get(form).enabled, 0);
+  await post(app, `/e/${slug}/forms/${form}/settings`, { internal_name: 'CFP', settings_form: '1' });
+  assert.equal(enabled(), 0);
+});
+
+test('a settings post that never mentions a box leaves it alone', async () => {
+  // The other half. Without this, changing a form's name from curl switched off
+  // the submitter confirmation email -- the one thing the customer wrote "must
+  // have" beside -- and said nothing.
+  const app = newApp();
+  const { slug, form } = await eventWithForm(app);
+  const enabled = () => app.db.prepare(
+    'SELECT send_confirmation_email AS enabled FROM form WHERE slug = ?').get(form).enabled;
+
+  await post(app, `/e/${slug}/forms/${form}/settings`,
+    { internal_name: 'CFP', settings_form: '1', send_confirmation_email: '1' });
+  assert.equal(enabled(), 1);
+
+  await post(app, `/e/${slug}/forms/${form}/settings`, { internal_name: 'Renamed' });
+  assert.equal(enabled(), 1, 'a partial save must not switch off what it did not mention');
 });
 
 test('two forms can run at once with different deadlines', async () => {

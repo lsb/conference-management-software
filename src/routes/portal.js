@@ -13,6 +13,7 @@ import { queueEmail } from '../core/mail.js';
 import { storeUpload, IMAGE_TYPES } from '../core/files.js';
 import { storeVersion } from '../core/content.js';
 import { setStatus, logActivity } from '../core/submissions.js';
+import { routeSubmission } from '../core/routing.js';
 import {
   fieldsOf, isClosed, optionResolver, conditionsFor, renderField,
   answersFor, personValues, validateAnswers, applyAnswers, CONDITIONAL_FIELD_SCRIPT,
@@ -401,6 +402,10 @@ function postEditSubmission(ctx) {
 
   if (sendingNow && submission.status === 'draft') {
     setStatus(ctx.db, submission.id, 'pending', { actorPersonId: person.id, detail: 'submitted from draft' });
+    // A draft finished later arrives the same way one written in a single
+    // sitting does, so it has to be sorted the same way. Routing runs at the
+    // moment a proposal stops being a draft, not at the moment it was created.
+    routeSubmission(ctx.db, submission.id, { actorPersonId: person.id });
   } else {
     logActivity(ctx.db, { eventId: event.id, actorPersonId: person.id, subjectType: 'submission',
       subjectId: submission.id, verb: 'edited', detail: 'by the submitter' });

@@ -514,6 +514,11 @@ function formDetail(ctx) {
 
       <h2>Settings</h2>
       <form method="post" action="/e/${event.slug}/forms/${form.slug}/settings">
+        <!-- Says "this post carries every checkbox on this form", so the ones it
+             leaves out were unticked rather than simply not mentioned. Without
+             it a partial save could never untick anything; with it, a curl
+             caller changing one field does not switch off the others. -->
+        <input type="hidden" name="settings_form" value="1">
         <div class="row">
           <div><label for="internal_name">Internal name</label>
             <input type="text" id="internal_name" name="internal_name" value="${form.internal_name}" required></div>
@@ -563,23 +568,47 @@ function updateForm(ctx) {
   requireOrganizer(ctx, event);
   const form = findForm(ctx, event, ctx.params.form);
 
-  const closeOn = ctx.fields.get('close_at');
-  ctx.db.prepare(
-    `UPDATE form SET internal_name = ?, external_title = ?, page_heading = ?,
-                     welcome_message = ?, success_message = ?, close_at = ?,
-                     submission_limit = ?, send_confirmation_email = ?,
-                     auto_redirect_to_portal = ?, collect_participants = ?, updated_at = ?
-      WHERE id = ?`,
-  ).run(ctx.fields.require('internal_name'), ctx.fields.get('external_title'),
-    ctx.fields.get('page_heading'), ctx.fields.get('welcome_message'),
-    ctx.fields.get('success_message'),
+  // A partial save: absent means "leave it alone", not "blank it".
+  //
+  // This used to write every column on every request, reading each from the
+  // request whether or not it was there. A browser was fine, because the form
+  // posts all of them. A curl caller renaming a form posted `internal_name`
+  // alone and thereby wiped the welcome text, the success message, the close
+  // date -- and switched off both the submitter confirmation email and the
+  // auto-redirect into the portal, which are the two things the customer marked
+  // "must have" and "make sure this works". Nothing said so.
+  //
+  // Checkboxes cannot be read the same way, because an unchecked box posts
+  // nothing at all: absence has to keep meaning "off" for the form, or you could
+  // never untick anything. `settings_form` is how the form says "the boxes I did
+  // not send, I left unticked on purpose". Anyone else's absence means "keep".
+  const columns = [];
+  const values = [];
+  const put = (column, value) => { columns.push(`${column} = ?`); values.push(value); };
+
+  put('internal_name', ctx.fields.require('internal_name'));
+
+  for (const name of ['external_title', 'page_heading', 'welcome_message', 'success_message']) {
+    if (ctx.fields.has(name)) put(name, ctx.fields.get(name));
+  }
+
+  if (ctx.fields.has('close_at')) {
+    const closeOn = ctx.fields.get('close_at');
     // End of day, so "closes on the 30th" means the 30th is still usable.
-    closeOn ? `${closeOn}T23:59:59Z` : null,
-    ctx.fields.int('submission_limit', null),
-    ctx.fields.bool('send_confirmation_email') ? 1 : 0,
-    ctx.fields.bool('auto_redirect_to_portal') ? 1 : 0,
-    ctx.fields.bool('collect_participants') ? 1 : 0,
-    now(), form.id);
+    put('close_at', closeOn ? `${closeOn}T23:59:59Z` : null);
+  }
+
+  if (ctx.fields.has('submission_limit')) {
+    put('submission_limit', ctx.fields.int('submission_limit', null));
+  }
+
+  const fromTheSettingsForm = ctx.fields.has('settings_form');
+  for (const name of ['send_confirmation_email', 'auto_redirect_to_portal', 'collect_participants']) {
+    if (fromTheSettingsForm || ctx.fields.has(name)) put(name, ctx.fields.bool(name) ? 1 : 0);
+  }
+
+  put('updated_at', now());
+  ctx.db.prepare(`UPDATE form SET ${columns.join(', ')} WHERE id = ?`).run(...values, form.id);
 
   return redirect(`/e/${event.slug}/forms/${form.slug}`);
 }
