@@ -117,3 +117,43 @@ test('undocumented routes are never suggested', () => {
   const r = new Router().post('/api/events/:event/decide', noop);
   assert.deepEqual(r.suggestionsFor('POST', '/api/events/x/decidee'), []);
 });
+
+test('a suggestion is withheld when only the prefix matches', () => {
+  // Run 9. `/api/sessions` was answered "did you mean GET /api/people?", the
+  // model followed it, and got 188 lines about people for a question about
+  // schedule clashes. `sessions` and `people` share only the literal `api`.
+  const r = new Router()
+    .get('/api/people', noop, 'people')
+    .get('/api/events', noop, 'events')
+    .get('/api/events/:event/agenda', noop, 'agenda');
+
+  assert.deepEqual(r.suggestionsFor('GET', '/api/sessions'), [],
+    'a wrong suggestion costs a request and fills a context that has little room');
+});
+
+test('a suggestion survives when most of the path was right', () => {
+  // The counterweight: `accept` and `decide` share not one letter in the same
+  // place, and `/api/events/x/submissions/SESS-15/accept` really does mean
+  // /decide. Spelling cannot separate that from sessions/people; context can --
+  // three literal segments already correct, against one.
+  const r = new Router()
+    .post('/api/events/:event/submissions/:code/decide', noop, 'decide')
+    .get('/api/people', noop, 'people');
+
+  assert.deepEqual(
+    r.suggestionsFor('POST', '/api/events/x/submissions/SESS-15/accept'),
+    ['POST /api/events/:event/submissions/:code/decide'],
+  );
+});
+
+test('dropping the event scope still gets help', () => {
+  // /api/sessions, /api/speakers and /api/tasks were all tried for routes that
+  // live under /api/events/:event/. Different segment counts, so shape matching
+  // cannot see them at all.
+  const r = new Router()
+    .get('/api/events/:event/tasks', noop, 'tasks')
+    .get('/api/events/:event/speakers', noop, 'speakers');
+
+  assert.deepEqual(r.suggestionsFor('GET', '/api/tasks'), ['GET /api/events/:event/tasks']);
+  assert.deepEqual(r.suggestionsFor('GET', '/api/speakers'), ['GET /api/events/:event/speakers']);
+});

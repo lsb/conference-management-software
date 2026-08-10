@@ -67,7 +67,7 @@ export class Router {
   suggestionsFor(method, pathname, limit = 3) {
     const asked = pathname.split('/').filter(Boolean);
 
-    return this.routes
+    const sameShape = this.routes
       .filter((r) => r.method === method && r.doc)
       .map((route) => {
         const parts = route.pattern.split('/').filter(Boolean);
@@ -76,23 +76,63 @@ export class Router {
         let wrong = 0;
         let drift = 0;
         let shared = 0;
+        let farthest = 0;
         for (const [i, part] of parts.entries()) {
           if (part.startsWith(':')) continue;          // a parameter fits anything
           if (part === asked[i]) { shared += 1; continue; }
           wrong += 1;
-          drift += editDistance(part, asked[i]);
+          const d = editDistance(part, asked[i]);
+          drift += d;
+          farthest = Math.max(farthest, d / Math.max(part.length, asked[i].length));
         }
 
-        // At least one fixed word in common, or this is not a near miss, it is a
-        // different question. Without it a route that is mostly parameters --
-        // /gallery/:event/:person -- gets offered for any three-segment path at
-        // all, and a suggestion that is usually noise is one nobody reads.
-        return wrong <= 1 && shared >= 1 ? { route, wrong, drift } : null;
+        // Three conditions, and the third was learned the expensive way.
+        //
+        // At least one fixed word in common, or this is not a near miss but a
+        // different question: without it /gallery/:event/:person is offered for
+        // any three-segment path at all.
+        //
+        // And the odd word out has to be plausible, judged by how much of the
+        // rest you got right rather than by spelling.
+        //
+        // `/api/sessions` was answered with "did you mean GET /api/people?"; the
+        // model followed it and got 188 lines about people for a question about
+        // schedule clashes. But `/api/events/x/submissions/SESS-15/accept`
+        // really does mean `/decide`, and `accept` and `decide` share not one
+        // letter in the same place. Spelling cannot tell those apart -- it puts
+        // them within 0.2 of each other -- so context does: `accept` arrived
+        // with three literal segments already correct, `sessions` with one.
+        //
+        // The more of a path somebody got right, the likelier it is that the one
+        // word they got wrong is the word we know. A wrong suggestion is worse
+        // than none, because it costs a request and fills a context that has
+        // very little room; saying nothing is allowed.
+        const plausible = wrong === 0 || shared >= 2 || farthest <= 0.5;
+        return wrong <= 1 && shared >= 1 && plausible ? { route, wrong, drift } : null;
       })
       .filter(Boolean)
       .sort((a, b) => a.wrong - b.wrong || a.drift - b.drift)
       .slice(0, limit)
       .map((s) => `${s.route.method} ${s.route.pattern}`);
+
+    if (sameShape.length > 0) return sameShape;
+
+    // Nothing of the same shape. Try the last word instead, because dropping the
+    // event scope is the most common way to guess wrong here: `/api/sessions`,
+    // `/api/speakers` and `/api/tasks` were all tried for routes that live under
+    // `/api/events/:event/`. Different segment counts, so the check above cannot
+    // see them, and a caller who guesses this way currently gets nothing.
+    const tail = asked[asked.length - 1];
+    if (!tail) return [];
+
+    return this.routes
+      .filter((r) => r.method === method && r.doc)
+      .filter((r) => {
+        const parts = r.pattern.split('/').filter(Boolean);
+        return parts[parts.length - 1] === tail && parts[0] === asked[0];
+      })
+      .slice(0, limit)
+      .map((r) => `${r.method} ${r.pattern}`);
   }
 }
 

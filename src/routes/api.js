@@ -31,8 +31,9 @@ export function mountApi(router) {
     'Every event, newest first.');
 
   router.get('/api/events/:event', getEvent,
-    'One event, with submission counts by status, and its room and track slugs -- '
-    + 'which is where to get the room you have to name before you can schedule anything.');
+    'One event: what needs attention right now as sentences with the URL that shows each, '
+    + 'submission counts by status, and the room and track slugs -- which is where to get '
+    + 'the room you have to name before you can schedule anything.');
 
   router.get('/api/events/:event/submissions', listSubmissions,
     'Submissions. ?status=pending|accept_queue|decline_queue|accepted|declined|withdrawn|draft, '
@@ -175,7 +176,24 @@ const SUBMISSION_SELECT = `
 
 function listEvents(ctx) {
   const events = ctx.db.prepare('SELECT * FROM event ORDER BY starts_at DESC').all();
-  return json({ events: events.map(eventShape) });
+
+  // The `docs` line is here because of Run 9, and it is the cheapest fix in this
+  // file. Every attempt in that suite began with this exact call -- it is the
+  // natural entry point, and it is the one route that needs no credentials. The
+  // attempts that went on to read /llms.txt passed; the ones that started
+  // guessing routes from here burned their budget and failed.
+  //
+  // We had written a machine-readable index of the whole app for precisely that
+  // reader, and the only way to find it was to already know it existed. That is
+  // finding 5, and 7, and 10: a capability nobody can discover is a capability
+  // nobody has. It went unnoticed because everybody who had the repository also
+  // had AGENTS.md telling them where to look.
+  return json({
+    events: events.map(eventShape),
+    docs: `${ctx.origin}/llms.txt`,
+    docs_note: 'How to authenticate, and a worked example of each common job. '
+      + 'Add ?all=1 for every route this app serves.',
+  });
 }
 
 function getEvent(ctx) {
@@ -195,11 +213,45 @@ function getEvent(ctx) {
     'SELECT slug, name FROM track WHERE event_id = ? ORDER BY sort_order, name',
   ).all(event.id);
 
+  const counts = statusCounts(ctx.db, event.id);
+  const conflicts = findConflicts(ctx.db, event.id);
+  const outstanding = outstandingTasks(ctx.db, event.id);
+  const unscheduled = unscheduledSessions(ctx.db, event.id);
+  const queued = awaitingNotification(ctx.db, event.id);
+
+  // Sentences, not only numbers, and this is a parity fix rather than a
+  // decoration. `conf status` answers "what needs attention" in the words the
+  // question is asked in -- "4 awaiting a decision" -- and the HTML dashboard
+  // renders the same. The API offered `submissions.pending: 4` and left the
+  // caller to know that pending means awaiting-a-decision. Asked exactly that,
+  // a model picked `accepted: 6` out of the same labelled map three times
+  // running (Run 9).
+  //
+  // Each carries the URL that shows the rows, which is the pattern
+  // REQUIREMENTS.md singles out as the genuinely useful part of the dashboard:
+  // a count and a link to the exact filtered list.
+  const api = `${ctx.origin}/api/events/${event.slug}`;
+  const needsAttention = [];
+  const note = (count, text, where) => {
+    if (count > 0) needsAttention.push({ count, text, where });
+  };
+
+  note(counts.pending, `${counts.pending} submission(s) awaiting a decision`,
+    `${api}/submissions?status=pending`);
+  note(queued.length, `${queued.length} decided but not yet told`, `${api}/notify`);
+  note(unscheduled.length, `${unscheduled.length} accepted session(s) with no room or time`,
+    `${api}/agenda`);
+  note(conflicts.filter((c) => c.severity === 'error').length,
+    `${conflicts.filter((c) => c.severity === 'error').length} scheduling conflict(s)`,
+    `${api}/conflicts`);
+  note(outstanding.length, `${outstanding.length} outstanding speaker task(s)`, `${api}/tasks`);
+
   return json({
     ...eventShape(event),
-    submissions: statusCounts(ctx.db, event.id),
-    conflicts: findConflicts(ctx.db, event.id).length,
-    outstanding_tasks: outstandingTasks(ctx.db, event.id).length,
+    needs_attention: needsAttention,
+    submissions: counts,
+    conflicts: conflicts.length,
+    outstanding_tasks: outstanding.length,
     rooms: rooms.map((r) => ({ slug: r.slug, name: r.name, capacity: r.capacity ?? null })),
     tracks: tracks.map((t) => ({ slug: t.slug, name: t.name })),
   });

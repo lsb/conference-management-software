@@ -543,3 +543,50 @@ test('by_status describes the event, not the filter', async () => {
   assert.equal(body.by_status.pending, 1, 'but the event still has one pending, and should say so');
   assert.equal(body.filtered, true, 'and should say that what came back was narrowed');
 });
+
+// --- findability --------------------------------------------------------------
+
+test('the entry point says where the documentation is', async () => {
+  // Run 9: every attempt in the blank-directory suite began with GET
+  // /api/events, and the ones that went on to read /llms.txt passed while the
+  // ones that started guessing routes failed. We had written a machine-readable
+  // index for exactly that reader and the only way to find it was to know.
+  const app = newApp({ as: null });
+
+  const entry = await get(app, '/api/events', { cookies: {} });
+
+  assert.equal(entry.status, 200, 'the entry point must answer without credentials');
+  const body = JSON.parse(entry.body);
+  assert.match(body.docs, /\/llms\.txt$/, 'and it must say where the instructions are');
+  assert.match(body.docs_note, /all=1/, 'including how to get the full route list');
+});
+
+test('what needs attention comes back as sentences with somewhere to go', async () => {
+  // `conf status` and the dashboard both answer this in the words the question
+  // uses. The API offered `submissions.pending: 4` and left the caller to know
+  // that pending means awaiting-a-decision; asked exactly that, a model picked
+  // `accepted: 6` out of the same map three times running.
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/forms`, { internal_name: 'CFP', with_defaults: '1' });
+  const form = (await get(app, `/e/${slug}/forms`)).body.match(/\/forms\/([a-z0-9-]+)"/)[1];
+  await post(app, `/submit/${slug}/${form}`, {
+    title: 'One', description: 'x', format: 'talk-30-min', track: 'ai-engineering',
+    'first-name': 'A', 'last-name': 'B', email: 'a@example.com', biography: 'Engineer.',
+  });
+
+  const body = JSON.parse((await get(app, `/api/events/${slug}`)).body);
+  const waiting = body.needs_attention.find((n) => /awaiting a decision/.test(n.text));
+
+  assert.ok(waiting, `expected a sentence about awaiting a decision, got ${
+    JSON.stringify(body.needs_attention)}`);
+  assert.equal(waiting.count, 1);
+  assert.match(waiting.where, /status=pending/,
+    'a count without the link to its rows is half an answer');
+});
+
+test('nothing needing attention says nothing, rather than saying zero', async () => {
+  const { app, slug } = await organizerApp();
+  const body = JSON.parse((await get(app, `/api/events/${slug}`)).body);
+  assert.deepEqual(body.needs_attention, [],
+    'a fresh event has nothing to chase, and a list of zeroes is noise');
+});
