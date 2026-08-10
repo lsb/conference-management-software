@@ -31,7 +31,6 @@ import {
   hashPassword, passwordMatches, setPassword, credentialFor, createApiToken, createMagicLink,
   tooManyAttempts, recordAttempt, clearAttempts, canOrganize,
 } from '../core/auth.js';
-import { logActivity } from '../core/submissions.js';
 
 const SETUP_TOKEN_FILE = join(ROOT_DIR, 'data', 'setup-token');
 
@@ -145,10 +144,17 @@ async function claim(ctx) {
   ctx.db.prepare('UPDATE person SET is_admin = 1 WHERE id = ?').run(person.id);
   setPassword(ctx.db, person.id, await hashPassword(password));
 
-  if (existsSync(SETUP_TOKEN_FILE)) unlinkSync(SETUP_TOKEN_FILE);
+  // Not `activity`: that table is per-event and NOT NULL on event_id, and there
+  // is no conference yet -- claiming is the thing that happens before there is
+  // one. The container log is the right place for an instance-level fact, and
+  // an operator reading it wants to know this happened.
+  console.error(`${email} claimed this instance and is now an administrator.`);
 
-  logActivity(ctx.db, { eventId: null, actorPersonId: person.id, subjectType: 'person',
-    subjectId: person.id, verb: 'claimed', detail: 'became an instance administrator' });
+  // Last, and only once everything above has succeeded. Deleting it earlier is
+  // how an instance bricks itself: the claim fails on something further down,
+  // the operator's only copy of the token is gone, and nothing can ever claim
+  // it again. (That is not hypothetical -- it is what the first version did.)
+  if (existsSync(SETUP_TOKEN_FILE)) unlinkSync(SETUP_TOKEN_FILE);
 
   return signedInRedirect(ctx, person.id, '/');
 }

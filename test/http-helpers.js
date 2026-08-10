@@ -48,12 +48,12 @@ export function newApp({ as = 'test-organizer' } = {}) {
  */
 const jarFor = (app, cookies) => cookies ?? app.cookies ?? {};
 
-export async function get(app, url, { cookies = null } = {}) {
-  return respond(app, { method: 'GET', url, headers: headersFor(jarFor(app, cookies)) });
+export async function get(app, url, { cookies = null, headers = {} } = {}) {
+  return respond(app, { method: 'GET', url, headers: { ...headersFor(jarFor(app, cookies)), ...headers } });
 }
 
 /** POST a form, the way a browser would. */
-export async function post(app, url, fields = {}, { cookies = null } = {}) {
+export async function post(app, url, fields = {}, { cookies = null, headers = {} } = {}) {
   const body = new URLSearchParams();
   for (const [key, value] of Object.entries(fields)) {
     for (const one of Array.isArray(value) ? value : [value]) body.append(key, one);
@@ -66,7 +66,11 @@ export async function post(app, url, fields = {}, { cookies = null } = {}) {
   return respond(app, {
     method: 'POST',
     url,
-    headers: { ...headersFor(jarFor(app, cookies)), 'content-type': 'application/x-www-form-urlencoded' },
+    headers: {
+      ...headersFor(jarFor(app, cookies)),
+      'content-type': 'application/x-www-form-urlencoded',
+      ...headers,
+    },
     req,
   });
 }

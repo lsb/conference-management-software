@@ -106,7 +106,8 @@ function createEvent(ctx) {
   // and whoever does becomes its owner below.
   if (!ctx.person) {
     throw forbidden('creating an event needs an account',
-      'sign in at /login, or ask for a link at /portal/sign-in, then try again');
+      'sign in at /sign-in. On an instance nobody has claimed yet, claim it first at '
+      + '/setup/claim with the setup token.');
   }
 
   const name = ctx.fields.require('name', 'for example: DevFlow Conf 2027');
