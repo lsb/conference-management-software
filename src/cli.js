@@ -26,6 +26,7 @@ import { createMagicLink } from './core/auth.js';
 import { queueEmail } from './core/mail.js';
 import { audienceSizes, resolveAudience } from './core/audience.js';
 import { searchPeople, personHistory, notesOn, tagsOn } from './core/crm.js';
+import { rulesFor, routingFor, describeRule } from './core/routing.js';
 import { STATUSES } from './core/submissions.js';
 
 const USAGE = `conf - run a conference from the command line
@@ -59,6 +60,8 @@ Usage:
   conf conflicts <event>                 clashes in the schedule
   conf speakers <event>                  accepted speakers and what they owe
   conf reviews <event>                   per reviewer: submitted and still to do
+  conf routing <event>                   rules that sort arriving proposals
+              [--submission CODE]        why one proposal landed where it did
 
   conf tasks <event> [--task SLUG]       outstanding speaker tasks
                      [--person SLUG]     e.g. --task headshot to see who owes one
@@ -142,6 +145,7 @@ const COMMAND_FLAGS = {
   conflicts: [],
   speakers: [],
   reviews: [],
+  routing: ['submission'],
   tasks: ['task', 'person', 'definitions', 'define', 'applies-to', 'requirement',
     'due', 'assign-when', 'optional', 'instructions', 'form', 'assign', 'retire', 'delete'],
   remind: ['dry-run'],
@@ -780,6 +784,58 @@ const COMMANDS = {
   },
 
   /** Who is behind on reviewing, which is the only reason to look. */
+  /**
+   * The rules that sort arriving proposals, and what they have actually done.
+   *
+   * Reading only. Writing a rule needs a form field, an operator and a value
+   * checked against what that field can answer, and doing that well is a screen
+   * -- POST /e/<event>/forms/<form>/routing, or the Routing section of the form
+   * editor. What belongs here is the question asked afterwards, usually by
+   * somebody who did not write the rule: why is this in the ML queue?
+   */
+  routing(db, args) {
+    const event = requireEvent(db, args._[1]);
+
+    if (args.submission) {
+      const submission = requireSubmission(db, event, args.submission);
+      const routed = routingFor(db, submission.id);
+      if (args.json) return output(args, { code: submission.code, routing: routed });
+      if (!routed) {
+        console.log(`${submission.code} was not routed.`);
+        console.log('Either its form has no rules, or it arrived before they did.');
+        return 0;
+      }
+      console.log(`${submission.code}: ${routed.outcome}`);
+      console.log(`  ${routed.detail}`);
+      console.log(`  recorded ${routed.created_at}`);
+      return 0;
+    }
+
+    const forms = db.prepare('SELECT * FROM form WHERE event_id = ? ORDER BY id').all(event.id);
+    const rows = [];
+    for (const form of forms) {
+      for (const [i, rule] of rulesFor(db, form.id).entries()) {
+        rows.push({
+          form: form.slug,
+          order: i + 1,
+          when: describeRule(rule),
+          plan: rule.plan_name ?? '-',
+          track: rule.track_name ?? '-',
+        });
+      }
+    }
+
+    if (args.json) return output(args, { rules: rows });
+
+    output(args, rows, 'No routing rules. Proposals arrive unsorted.');
+    console.log('\nRules are evaluated in order and the first match wins.');
+    console.log(`  add one:  POST /e/${event.slug}/forms/<form>/routing`);
+    console.log(`            --data "field=track&operator=equals&value=<slug>" \\`);
+    console.log(`            --data "plan=<round-slug>&track=<track-slug>"`);
+    console.log(`  why did SESS-3 land where it did:  conf routing ${event.slug} --submission SESS-3`);
+    return 0;
+  },
+
   reviews(db, args) {
     const event = requireEvent(db, args._[1]);
     const rows = db.prepare(
