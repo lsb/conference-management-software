@@ -14,7 +14,16 @@ npm run seed        # a demo conference with real-looking data
 npm start           # http://127.0.0.1:8080
 ```
 
-There is also a command line for the same operations:
+`npm run seed` prints the demo administrator's address and password. Sign in at
+`/sign-in`; every organizer screen needs an account, on your laptop exactly as
+on a deployment. For scripts, mint a token at `/account` and send it as
+`authorization: bearer <token>`.
+
+A fresh instance nobody has seeded or claimed is claimed at `/setup/claim` with
+the setup token, which is `SETUP_TOKEN` or the contents of `data/setup-token`.
+
+There is also a command line, which needs no sign-in because it opens the
+database directly:
 
 ```sh
 ./bin/conf --help
@@ -33,8 +42,13 @@ language model — which is a design constraint we test rather than assume. See
 `docs/EVAL.md`.
 
 **It is your data.** One SQLite file you can copy, diff, back up, and read with
-any tool that speaks SQL. Nothing phones home. The server binds `127.0.0.1`
-unless you tell it otherwise.
+any tool that speaks SQL. Nothing phones home, and nothing is emailed anywhere —
+every message is rendered into an outbox you can read.
+
+**It behaves the same everywhere.** Who may organize is a row in the database,
+never a fact about which interface the server is bound to. There is no "open on
+localhost" shortcut, because having one meant the behaviour that shipped was the
+one nobody ever exercised.
 
 ## The one thing to understand
 
@@ -60,6 +74,10 @@ Speakers never see the queue states. Until you actually send, their portal says
 - **Custom submission forms** — an ordered field list with required/locked
   fields, conditional questions, per-form deadlines, submission limits, and
   combined character caps for print programmes.
+- **Category-based routing** — a rule reads one answer on an arriving proposal
+  and decides where it goes: which review round picks it up, and what track it
+  belongs to. First match wins, and every proposal records which rule sorted it
+  and why.
 - **A public call for speakers** that a stranger can complete without making an
   account, and which drops them straight into their speaker portal afterwards.
 - **Review and scoring** across multiple rounds, with weighted criteria, per
@@ -71,7 +89,15 @@ Speakers never see the queue states. Until you actually send, their portal says
   week before, the day before, and the day after a deadline — and then stops.
 - **Schedule building** with first-class conflict detection: speaker
   double-bookings, room clashes, and track collisions. A move that would clash is
-  refused rather than accepted and complained about afterwards.
+  refused rather than accepted and complained about afterwards. Sessions can be
+  dragged onto the grid, moved with the keyboard, or placed by a form — all three
+  send the same request, so all three are refused by the same code.
+- **Speaker tasks you define yourself** — a bio, a headshot, a signed form, a
+  deck. A task added after the acceptances have gone out still reaches everybody
+  already accepted, and says how many.
+- **Calendar invites** as `.ics`, keeping one identity per session, so moving a
+  talk revises the entry already in the speaker's calendar instead of adding a
+  second one.
 - **A dashboard** of sentences rather than charts: "3 submissions awaiting a
   decision", "2 accepted speakers missing a bio or headshot", each linking to the
   exact filtered list.
@@ -95,8 +121,12 @@ docs/
   DESIGN.md       how it is put together, and why that shape
   DECISIONS.md    standing choices and their costs
   EVAL.md         how we test that a small local model can drive it
+  DEPLOY.md       three environment variables and a disk
+  ACCEPTANCE-TESTS.md  certifying a deployment over HTTP
 eval/             the local-model usability suite
 test/             node:test, no test framework
+test/acceptance/  the same, over HTTP, importing nothing
+Dockerfile        no build step, because there is nothing to build
 ```
 
 Start with `src/migrations/001_initial.sql`. It is written to be read.
@@ -104,8 +134,31 @@ Start with `src/migrations/001_initial.sql`. It is written to be read.
 ## Tests
 
 ```sh
-npm test
+npm test           # 336 in-process tests, no framework
+npm run test:http  # the same app over HTTP, by URL, importing nothing
 ```
+
+The second suite exists because the first cannot see certain bugs. It talks to a
+running server and nothing else, so it can be pointed at a deployment to prove
+the deployment did not change anything. It found a confirmation email whose
+sign-in link had never worked for anybody: in-process the token round-trips
+fine, and by hand you never notice, because the same response signs you in.
+
+There is a third kind of test in `eval/`, which points a small local model at
+the app and measures whether it can actually do the job. See `docs/EVAL.md`.
+
+## Deploying
+
+```sh
+docker build -t conference .
+docker run -d -p 8080:8080 -v conference-data:/app/data \
+  -e PUBLIC_ORIGIN=https://conf.example.com \
+  -e SETUP_TOKEN="$(openssl rand -base64 32)" conference
+```
+
+The volume is not optional: `/app/data` holds the database and every file a
+speaker has uploaded, and without it the first redeploy erases the conference.
+See `docs/DEPLOY.md` for what each variable does.
 
 ## Requirements
 
