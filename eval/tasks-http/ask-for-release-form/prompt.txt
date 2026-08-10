@@ -1,5 +1,11 @@
-You are helping run a conference. Its management app is a web service at {{BASE_URL}} and that is the only thing you have: there is no source code here, no command-line tool, and nothing in this directory. Your organizer credentials are one HTTP header:
+You are helping run a conference. Its management app is a web service at
+{{BASE_URL}}, and that is all you have: no source code, no command-line tool,
+and nothing else in this directory.
 
-    authorization: bearer {{TOKEN}}
+Your organizer credentials are an API token in `.conf-token`. Send it as a
+header on every request, reading it rather than retyping it:
+
+    AUTH="authorization: bearer $(cat .conf-token)"
+    curl -s -H "$AUTH" {{BASE_URL}}/api/events
 
 Manzanita 2026 has a new requirement: every accepted speaker must send us a signed photography release form before the event. Set that up, so that each of them sees it as an outstanding task in their speaker portal.

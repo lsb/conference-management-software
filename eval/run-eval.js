@@ -132,6 +132,16 @@ for (const task of tasks) {
         console.error(`  could not mint a token: ${minted.stderr?.trim()}`);
         break;
       }
+      // The token goes in a FILE beside the model, not only in its prompt.
+      //
+      // We watched an attempt retype a 43-character base64url secret and get it
+      // wrong -- `...LA7fRHpnye0...` came back as `...LA7fHirye0...` -- and then
+      // spend fifteen tool calls and its whole budget failing to authenticate.
+      // Transcription is not what this measures, and it is not what happens in
+      // life either: nobody retypes a bearer token, they point at where it is
+      // kept. A file is the realistic setup and the fair one.
+      writeFileSync(join(workingDir, '.conf-token'), `${minted.stdout.trim()}\n`, { mode: 0o600 });
+
       filledPrompt = prompt
         .replaceAll('{{BASE_URL}}', BASE_URL)
         .replaceAll('{{TOKEN}}', minted.stdout.trim());

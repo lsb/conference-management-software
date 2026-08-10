@@ -1,5 +1,11 @@
-You are helping run a conference. Its management app is a web service at {{BASE_URL}} and that is the only thing you have: there is no source code here, no command-line tool, and nothing in this directory. Your organizer credentials are one HTTP header:
+You are helping run a conference. Its management app is a web service at
+{{BASE_URL}}, and that is all you have: no source code, no command-line tool,
+and nothing else in this directory.
 
-    authorization: bearer {{TOKEN}}
+Your organizer credentials are an API token in `.conf-token`. Send it as a
+header on every request, reading it rather than retyping it:
+
+    AUTH="authorization: bearer $(cat .conf-token)"
+    curl -s -H "$AUTH" {{BASE_URL}}/api/events
 
 The developer rebuilding the Manzanita 2026 website does not want to paste our HTML into their page - they want to fetch the programme as JSON and render it with their own templates. Set that up, and tell them the exact URL to fetch.

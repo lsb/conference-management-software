@@ -74,9 +74,17 @@ npm start &
 node eval/run-eval.js --http
 ```
 
-Each attempt gets a freshly minted token (`eval/mint-token.js`) and a fresh
-empty working directory under `eval/runs/<timestamp>/`, so attempt N cannot
-coast on attempt N-1. Prompts use `{{BASE_URL}}` and `{{TOKEN}}` placeholders.
+Each attempt gets a fresh working directory under `eval/runs/<timestamp>/`
+containing exactly one thing -- `.conf-token`, freshly minted -- so attempt N
+cannot coast on attempt N-1. Prompts use `{{BASE_URL}}` and `{{TOKEN}}`
+placeholders.
+
+**The token is in a file, not only in the prompt, and that is load-bearing.** An
+attempt once retyped a 43-character base64url secret and got it wrong, then
+spent fifteen tool calls and its entire budget failing to authenticate. Whether
+a model can transcribe 43 characters is not what this measures, and it is not
+what happens in life either: nobody retypes a bearer token, they point at where
+it is kept.
 
 **The model may be remote; the harness may not.** `BASE_URL` moves where the
 *model* points, and that part works. But the checkers read ground truth out of
