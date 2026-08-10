@@ -186,14 +186,20 @@ for (const task of tasks) {
 
     // An attempt that made no tool call at all is a stalled model, not a verdict
     // about the app, and counting it as a failure quietly turns the score into
-    // part measurement and part weather. We have watched this twice: 900
+    // part measurement and part weather. We have watched this repeatedly: 900
     // seconds, 120 bytes of trace, not one request. It is loud rather than
     // silent -- it prints, and it is capped -- because a harness that hides its
     // own flakiness is worse than one that is flaky.
+    //
+    // Not conditioned on the exit status any more. Run 9 had an attempt exit
+    // cleanly in 103 seconds having made no request and said nothing, and it was
+    // scored as a failure. Doing nothing is doing nothing however the process
+    // ends. Safe for side-effect-scored tasks too: with no tool call there is no
+    // side effect either, so this can never excuse real work.
     const trace = existsSync(tracePath) ? readFileSync(tracePath, 'utf8') : '';
     const toolCalls = (trace.match(/^\s*(?:\x1b\[[0-9;]*m)*\s*[$%]/gm) ?? []).length;
 
-    if (run.status !== 0 && toolCalls === 0 && answer === '') {
+    if (toolCalls === 0 && answer === '') {
       stalls++;
       // Keep the evidence. The retry reuses this attempt number and would
       // otherwise write over the very trace that shows the stall, which is the
