@@ -20,3 +20,7 @@ eval/runs/
 
 # The setup token on a locally-started instance that nobody has claimed yet.
 data/setup-token
+
+# Output of the slides-archive eval task, which writes into the working
+# directory by design. It is a build artifact of a test run, not source.
+av-slides.zip
