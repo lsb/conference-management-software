@@ -303,8 +303,8 @@ function errorResponse(err, req) {
 function mountMeta(router) {
   router.get('/llms.txt', (ctx) => text(llmsTxt(ctx.router, { brief: !ctx.query.has('all') })),
     'This file: how to authenticate, and worked examples of the common jobs. '
-    + 'Add ?all=1 for the complete list of every route, which is four times longer '
-    + 'and which most jobs do not need.');
+    + 'The complete list of every route is at /llms.txt?all=1 -- four times longer, '
+    + 'and most jobs do not need it.');
 
   router.get('/healthz', (ctx) => {
     const { n } = ctx.db.prepare('SELECT count(*) AS n FROM event').get();
@@ -340,9 +340,9 @@ export function llmsTxt(router, { brief = false } = {}) {
     'opaque ids. There is also a command line covering most of this: `bin/conf --help`.',
     '',
     'This is the short form: how to get in, then a worked example of each common',
-    'job. It is what most callers need. Add ?all=1 for a complete list of every',
-    'route the app serves -- four times longer, generated from the route table, and',
-    'the place to look when no recipe below covers what you want.',
+    'job. It is what most callers need. The complete list of every route is at',
+    `${PUBLIC_ORIGIN}/llms.txt?all=1 -- four times longer, generated from the route`,
+    'table, and the place to look when no recipe below covers what you want.',
     '',
     '## Getting in',
     '',

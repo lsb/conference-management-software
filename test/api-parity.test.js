@@ -558,7 +558,10 @@ test('the entry point says where the documentation is', async () => {
   assert.equal(entry.status, 200, 'the entry point must answer without credentials');
   const body = JSON.parse(entry.body);
   assert.match(body.docs, /\/llms\.txt$/, 'and it must say where the instructions are');
-  assert.match(body.docs_note, /all=1/, 'including how to get the full route list');
+  assert.match(body.docs_all_routes, /\/llms\.txt\?all=1$/,
+    'the full route list must be a URL to copy, not an instruction to build one: '
+    + 'a reader told to "add ?all=1" appends it to whatever it is holding, and one '
+    + 'wrote it unquoted into a shell where zsh globbed the ? and ate the request');
 });
 
 test('what needs attention comes back as sentences with somewhere to go', async () => {
@@ -589,4 +592,37 @@ test('nothing needing attention says nothing, rather than saying zero', async ()
   const body = JSON.parse((await get(app, `/api/events/${slug}`)).body);
   assert.deepEqual(body.needs_attention, [],
     'a fresh event has nothing to chase, and a list of zeroes is noise');
+});
+
+test('the task list says how it can be narrowed, with whole URLs', async () => {
+  // "Which speakers have not uploaded a headshot" was answered with twenty rows
+  // of four kinds; the reader filtered by eye and missed one of six. Finding 2,
+  // third occurrence. `available_tasks` was already there and is a bare list of
+  // slugs -- it does not say what to do with them.
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/tasks/definitions`, {
+    title: 'Upload a headshot', applies_to: 'person', requirement: 'file',
+  });
+
+  const body = JSON.parse((await get(app, `/api/events/${slug}/tasks`)).body);
+
+  assert.ok(body.by_task, 'an unfiltered list should say how many owe each kind');
+  const slugs = Object.keys(body.narrow_to_one_kind);
+  assert.ok(slugs.length > 0, 'and should hand over the URL for each kind');
+  assert.match(body.narrow_to_one_kind[slugs[0]], /\/tasks\?task=/,
+    'a whole URL, because a reader told to build one appends it to whatever it is holding');
+});
+
+test('a narrowed task list does not repeat the whole menu back', async () => {
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/tasks/definitions`, {
+    title: 'Upload a headshot', applies_to: 'person', requirement: 'file',
+  });
+
+  const body = JSON.parse((await get(app,
+    `/api/events/${slug}/tasks?task=upload-a-headshot`)).body);
+
+  assert.equal(body.filtered, true, 'it should say the rows were narrowed');
+  assert.equal(body.by_task, undefined,
+    'and not offer the menu again to somebody who has already ordered');
 });

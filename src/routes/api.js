@@ -188,11 +188,24 @@ function listEvents(ctx) {
   // finding 5, and 7, and 10: a capability nobody can discover is a capability
   // nobody has. It went unnoticed because everybody who had the repository also
   // had AGENTS.md telling them where to look.
+  // Two complete URLs, not one URL and an instruction to modify it.
+  //
+  // The first version said "Add ?all=1 for every route this app serves", and
+  // readers attached ?all=1 to whatever they were holding: /api/events?all=1,
+  // /api/submissions?all=1. Worse, one of them wrote it unquoted into a shell,
+  // zsh globbed the `?`, the request never left the machine -- so our 404, and
+  // the route suggestion built for exactly that guess, never got the chance to
+  // correct it, and it invented three speakers instead.
+  //
+  // An instruction that induces a broken command is worse than no instruction:
+  // it costs the mistake AND the chance to catch it. A whole URL gets copied
+  // whole.
   return json({
     events: events.map(eventShape),
     docs: `${ctx.origin}/llms.txt`,
-    docs_note: 'How to authenticate, and a worked example of each common job. '
-      + 'Add ?all=1 for every route this app serves.',
+    docs_all_routes: `${ctx.origin}/llms.txt?all=1`,
+    docs_note: 'Start at `docs`: how to authenticate, and a worked example of each '
+      + 'common job. `docs_all_routes` is every route this app serves.',
   });
 }
 
@@ -512,9 +525,34 @@ function listTasks(ctx) {
   }
 
   const tasks = outstandingTasks(ctx.db, event.id, { personId, taskSlug });
+
+  // Who owes what, per kind, and the URL that asks for one kind.
+  //
+  // "Which speakers have not uploaded a headshot" was answered with twenty rows
+  // of four kinds, and the reader filtered by eye and missed one of six. That is
+  // this repo's finding 2 for the third time: `conf tasks` did it in Run 3, the
+  // submission list did it this morning, and now the JSON. Each time the answer
+  // was present and each time it had to be extracted carefully.
+  //
+  // The remedy that worked for submissions was to put the answer in the reply
+  // rather than requiring a tally, and it flipped that task from failing to
+  // passing in one run. Same here: counts per kind, and -- because
+  // `available_tasks` was already a bare list of slugs and evidently did not say
+  // what to do with them -- a whole URL per kind, ready to copy.
+  const byTask = {};
+  for (const d of definitions) {
+    byTask[d.slug] = outstandingTasks(ctx.db, event.id, { taskSlug: d.slug }).length;
+  }
+
   return json({
     event: event.slug,
     count: tasks.length,
+    ...(taskSlug || personId ? { filtered: true } : {
+      by_task: byTask,
+      narrow_to_one_kind: Object.fromEntries(definitions.map((d) => [
+        d.slug, `${ctx.origin}/api/events/${event.slug}/tasks?task=${d.slug}`,
+      ])),
+    }),
     available_tasks: definitions.map((d) => d.slug),
     tasks: tasks.map((t) => ({
       task: t.task_slug,
