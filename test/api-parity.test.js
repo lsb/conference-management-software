@@ -626,3 +626,19 @@ test('a narrowed task list does not repeat the whole menu back', async () => {
   assert.equal(body.by_task, undefined,
     'and not offer the menu again to somebody who has already ordered');
 });
+
+test('the event carries every slug you need before you can act', async () => {
+  // Rooms to schedule into, tracks to sort by, review rounds to route to. An
+  // attempt trying to create a routing rule needed a round's slug, found it only
+  // in the HTML of /e/<event>/evaluation, pulled the page into a context with no
+  // room for it, and ran out of time holding the answer.
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/evaluation`, { name: 'First Round (ML)' });
+
+  const body = JSON.parse((await get(app, `/api/events/${slug}`)).body);
+
+  assert.ok(body.rooms.length > 0, 'rooms, to schedule into');
+  assert.ok(body.tracks.length > 0, 'tracks, to sort by');
+  assert.ok(body.review_rounds.length > 0, 'and review rounds, to route to');
+  assert.ok(body.review_rounds[0].slug, 'each with the slug the form expects');
+});

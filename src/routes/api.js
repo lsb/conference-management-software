@@ -32,8 +32,8 @@ export function mountApi(router) {
 
   router.get('/api/events/:event', getEvent,
     'One event: what needs attention right now as sentences with the URL that shows each, '
-    + 'submission counts by status, and the room and track slugs -- which is where to get '
-    + 'the room you have to name before you can schedule anything.');
+    + 'submission counts by status, and the slugs you have to name before you can do '
+    + 'anything else -- rooms to schedule into, tracks, and review rounds to route to.');
 
   router.get('/api/events/:event/submissions', listSubmissions,
     'Submissions. ?status=pending|accept_queue|decline_queue|accepted|declined|withdrawn|draft, '
@@ -244,6 +244,18 @@ function getEvent(ctx) {
     'SELECT slug, name FROM track WHERE event_id = ? ORDER BY sort_order, name',
   ).all(event.id);
 
+  // Review rounds ride along for the same reason rooms do: you have to name one
+  // before you can point a routing rule at it, and until now the only way to
+  // learn a round's slug over HTTP was to fetch /e/<event>/evaluation and read
+  // it out of the HTML. An attempt did exactly that, pulled a page of forms into
+  // a context that had no room for it, and ran out of time holding the answer.
+  //
+  // The parity audit added JSON twins for embeds, files, reviews and people and
+  // did not catch this, because routing did not exist when it ran.
+  const rounds = ctx.db.prepare(
+    'SELECT slug, name, round FROM evaluation_plan WHERE event_id = ? ORDER BY round, id',
+  ).all(event.id);
+
   const counts = statusCounts(ctx.db, event.id);
   const conflicts = findConflicts(ctx.db, event.id);
   const outstanding = outstandingTasks(ctx.db, event.id);
@@ -285,6 +297,7 @@ function getEvent(ctx) {
     outstanding_tasks: outstanding.length,
     rooms: rooms.map((r) => ({ slug: r.slug, name: r.name, capacity: r.capacity ?? null })),
     tracks: tracks.map((t) => ({ slug: t.slug, name: t.name })),
+    review_rounds: rounds.map((r) => ({ slug: r.slug, name: r.name, round: r.round })),
   });
 }
 
