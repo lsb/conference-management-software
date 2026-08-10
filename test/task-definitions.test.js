@@ -653,9 +653,12 @@ test('an unknown task on the command line names the ones that exist', () => {
 test('llms.txt carries a worked example, because a route without one goes unused', async () => {
   const app = newApp();
   const body = (await get(app, '/llms.txt')).body;
+  const full = (await get(app, '/llms.txt?all=1')).body;
 
+  // The recipe belongs in the short form -- that is the whole point of it being
+  // a recipe. The route's own entry lives in the complete list behind ?all=1.
   assert.match(body, /### Ask speakers for something/);
-  assert.match(body, /POST \/e\/:event\/tasks\/definitions/);
+  assert.match(full, /POST \/e\/:event\/tasks\/definitions/);
   assert.match(body, /applies_to=submission/);
   assert.match(body, /ALREADY accepted/);
   assert.match(body, /Retire it instead/);

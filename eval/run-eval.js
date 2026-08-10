@@ -136,7 +136,16 @@ for (const task of tasks) {
     const run = spawnSync(join(EVAL_DIR, 'ask-local.sh'), [workingDir, filledPrompt], {
       cwd: ROOT_DIR,
       encoding: 'utf8',
-      env: { ...process.env, LOCAL_TRACE: tracePath },
+      env: {
+        ...process.env,
+        LOCAL_TRACE: tracePath,
+        // An HTTP task is several round trips where a `conf` command is one, and
+        // on a CPU model the cost is dominated by loading the weights and by
+        // prefill, not by thinking. At 420s we watched an attempt spend its
+        // whole budget on a cold load and a single `ls`, which measures the
+        // machine rather than the app. Overridable, as before.
+        LOCAL_TIMEOUT: process.env.LOCAL_TIMEOUT ?? (HTTP_MODE ? '900' : '420'),
+      },
       maxBuffer: 32 * 1024 * 1024,
     });
     const seconds = Math.round((Date.now() - began) / 1000);

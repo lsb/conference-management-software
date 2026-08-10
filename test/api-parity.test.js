@@ -465,7 +465,9 @@ test('the speaker database stays shut on an instance with no events at all', asy
 test('every new route appears in llms.txt, because that is the only front door', async () => {
   const { app } = await organizerApp();
 
-  const llms = (await get(app, '/llms.txt')).body;
+  // ?all=1, because the default is now the short form: recipes only. The
+  // complete route table is what this test is about, and it is one flag away.
+  const llms = (await get(app, '/llms.txt?all=1')).body;
 
   for (const pattern of [
     '/api/events/:event/portal-links',

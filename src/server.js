@@ -115,7 +115,7 @@ export async function respond(app, { method, url, headers = {}, req = null }) {
         `try: ${allowed.join(', ')}`);
     }
     throw new HttpError(404, `no route for ${method} ${parsed.pathname}`,
-      'GET /llms.txt lists every route this app serves');
+      'GET /llms.txt has worked examples of the common jobs; add ?all=1 for every route');
   }
 
   const fields = method === 'POST' && req ? await parseBody(req) : null;
@@ -274,10 +274,10 @@ function errorResponse(err, req) {
 // --- meta routes -----------------------------------------------------------
 
 function mountMeta(router) {
-  router.get('/llms.txt', (ctx) => text(llmsTxt(ctx.router, { brief: ctx.query.has('brief') })),
-    'This file. How to authenticate, worked examples for the common jobs, then every '
-    + 'route. Add ?brief=1 for just the first two, which is about a quarter of the size '
-    + 'and is all most jobs need.');
+  router.get('/llms.txt', (ctx) => text(llmsTxt(ctx.router, { brief: !ctx.query.has('all') })),
+    'This file: how to authenticate, and worked examples of the common jobs. '
+    + 'Add ?all=1 for the complete list of every route, which is four times longer '
+    + 'and which most jobs do not need.');
 
   router.get('/healthz', (ctx) => {
     const { n } = ctx.db.prepare('SELECT count(*) AS n FROM event').get();
@@ -440,15 +440,28 @@ export function llmsTxt(router, { brief = false } = {}) {
     '',
   ];
 
+  // The default stops here, and that is a decision the traces forced.
+  //
   // Everything above is about six kilobytes; the route list below is eighteen
-  // more. A small model on CPU that curls the whole file spends most of its
-  // budget reading a catalogue it did not need -- we watched one do exactly
-  // that, get through all 167 routes, and answer nothing. ?brief=1 stops here.
+  // more. We watched a 12B model on CPU curl the whole thing, read all 167
+  // routes, and run out of clock with nothing to say -- Run 1's seed.js problem
+  // with our own documentation as the trap. Completeness and readability turned
+  // out to be different properties and the file only had the first.
+  //
+  // The first attempt at this made the full list the default and offered
+  // ?brief=1 to opt out, which does not work: the only place that says the
+  // option exists is inside the file you have to read to find it. So the short
+  // form is what you get, and the long form is one flag away. Nothing is
+  // removed -- the complete list is still generated from the route table, still
+  // cannot go stale, and is still the API documentation the brief asks for.
   if (brief) {
     lines.push(
-      `Omitted: ${documented.length} routes, grouped by area.`,
-      'Fetch /llms.txt without ?brief=1 for the full list. Most jobs are covered by',
-      'the recipes above and do not need it.',
+      `## Every route (${documented.length} of them)`,
+      '',
+      'Not included here, because most jobs are covered by the recipes above and this',
+      'list is four times their length:',
+      '',
+      `    curl -s ${PUBLIC_ORIGIN}/llms.txt?all=1`,
       '',
     );
     return `${lines.join('\n')}\n`;
