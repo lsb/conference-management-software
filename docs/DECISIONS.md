@@ -218,3 +218,63 @@ burst of requests from one browser.
 **Decision.** The incumbent product is not named anywhere in this repository.
 Third-party systems we *integrate with* (Accelevents) are named, because an integration
 target has to be named to be useful.
+
+---
+
+## D12 — Authorization is a database fact, and behaves the same everywhere
+
+**Decision.** `canOrganize` reads two things: `person.is_admin`, or an
+`owner`/`organizer` row in `event_membership`. `organizerAccessIsOpen()` — which
+returned true whenever `HOST` was loopback — is deleted, not extended. There is
+no branch anywhere that asks what interface the server is bound to.
+
+**Why.** The exemption made this two products. Wide open on a laptop, entirely
+shut on any public address, and only the first was ever exercised, so the
+deployed behaviour was the untested one. That is backwards, and it hid faults
+rather than merely permitting them: `/login` was broken for months — every
+persona named an address no seed creates — and nobody noticed, because local
+development never has to sign in. Three `/api` routes answered strangers.
+`POST /e/new` was unauthenticated. There was no CSRF defence at all, which
+combined with open loopback access was exploitable on every developer's machine.
+
+**Trust on first use, with one gate.** The first person to present the setup
+token claims the instance and becomes its administrator; they bless everybody
+else. The gate exists because a deployment's URL is public before anybody has
+claimed it — it gets submitted, written down, shared — so pure TOFU hands the
+conference to whoever loads it first, and a redeploy onto a fresh volume reopens
+that window with the address already circulating. Gitea ships `INSTALL_LOCK=false`
+for this reason. The token is never logged; when the operator supplies none we
+generate one, write it at mode 0600, and log only the path (CWE-532).
+
+**Staff have passwords, and that follows from having no SMTP** (D5: mail is
+written to an outbox and never sent). A link-only sign-in for the people who run
+the conference is not friction at a boundary that deserves it; it is an outage
+waiting for its first locked-out organizer. Speakers keep magic links and never
+get a password — the requirement is that they reach their portal without a heavy
+signup. Scripts send a bearer token, because one header is something an
+`llms.txt` recipe can carry and a cookie jar is not.
+
+**Consequences to respect.**
+
+- **`DEMO_LOGIN=1` must be set on the deployment the evaluator drives.** D9 says
+  the evaluator is a headless browser handed one URL, with no shell and no
+  repository. `/login` is the only door it can use, and it is now off unless
+  asked for. If the flip ships to that instance without the flag, the app scores
+  nothing — and D11 notes that below 60% coverage the result is withheld
+  entirely rather than reported. This is a deployment fact with existential
+  consequences, which is why it is here and not in a code comment.
+- `PUBLIC_ORIGIN` is now how the app knows what it is called. It sets the
+  `Secure` cookie flag, supplies the CSRF target origin, and builds every
+  absolute URL — which is what closed the host-header injection where
+  `Host: evil.example` put a live sign-in token into the outbox.
+- No `__Host-` cookie prefix, against both OWASP and NIST, because Chrome and
+  Safari reject prefixed cookies over plain HTTP on loopback and it would make
+  local development impossible in two of three browsers. Mitigated by this being
+  one origin with no subdomains, per D11.
+- Sessions are not bound to IP or User-Agent, against OWASP's "highly
+  recommended", because organizers work from phones on conference wifi and the
+  failure mode — locked out mid-schedule with no way to mail yourself a link —
+  is worse than the attack it prevents against a 256-bit HttpOnly token.
+- The test suite must pass identically under `npm test` and
+  `HOST=0.0.0.0 npm test`. If those ever differ again, something has grown a
+  dependency on how the server was started.

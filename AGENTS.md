@@ -93,8 +93,28 @@ paperwork reminder. Start from `conf audiences <event>`.
 
 ## There is also an HTTP server
 
-`npm start` serves on `http://127.0.0.1:8080`. Every page has a JSON twin under
-`/api`. `curl http://127.0.0.1:8080/llms.txt` lists every route with examples.
+`npm start` serves on `http://127.0.0.1:8080`. `curl
+http://127.0.0.1:8080/llms.txt` lists every route with examples, and opens with
+how to authenticate.
+
+**The server needs credentials; the command line does not.** `bin/conf` opens
+the database directly, so it never asks you to sign in. Everything under `/e/`
+and `/api/` answers 403 without an organizer, and it does so identically whether
+the server is on your laptop or on the internet — there is no "it is open
+locally" shortcut any more, because having one meant the deployed behaviour was
+the one nobody ever tested.
+
+For curl, mint a token once and send it as a header:
+
+```sh
+# sign in at /sign-in, then mint a token at /account
+AUTH="authorization: bearer $CONF_TOKEN"
+curl -s -H "$AUTH" http://127.0.0.1:8080/api/events
+```
+
+`npm run seed` prints the demo administrator's password. A fresh instance that
+nobody has claimed is claimed at `/setup/claim` with the setup token, which is
+`SETUP_TOKEN` or the contents of `data/setup-token`.
 
 Check whether it is already up before starting one. `npm start` against a taken
 port dies with a raw `EADDRINUSE` stack trace, which reads like a broken app and
