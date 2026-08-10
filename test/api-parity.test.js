@@ -491,3 +491,55 @@ test('no route is registered without a doc string', async () => {
   const undocumented = app.router.routes.filter((r) => !r.doc).map((r) => `${r.method} ${r.pattern}`);
   assert.deepEqual(undocumented, []);
 });
+
+// --- counting without counting ------------------------------------------------
+
+test('the submission list carries the counts, so nobody has to tally rows', async () => {
+  // A model asked "how many are waiting for a decision" fetched this route
+  // unfiltered and answered 6, from a list of 19 whose true pending count was 4.
+  // Nothing in the data misled it -- it counted wrong -- and `count`, which is
+  // how many rows came back, sits at the top as a plausible wrong answer.
+  const { app, slug: event } = await organizerApp();
+
+  const before = await get(app, `/api/events/${event}/submissions`);
+  assert.equal(before.status, 200);
+  assert.ok(JSON.parse(before.body).by_status, 'the reply should carry by_status');
+
+  await post(app, `/e/${event}/forms`, { internal_name: 'CFP', with_defaults: '1' });
+  const form = (await get(app, `/e/${event}/forms`)).body.match(/\/forms\/([a-z0-9-]+)"/)[1];
+  for (const title of ['One', 'Two', 'Three']) {
+    await post(app, `/submit/${event}/${form}`, {
+      title, description: 'x', format: 'talk-30-min', track: 'ai-engineering',
+      'first-name': 'A', 'last-name': title, email: `${title.toLowerCase()}@example.com`,
+      biography: 'Engineer.',
+    });
+  }
+
+  const all = await get(app, `/api/events/${event}/submissions`);
+  const body = JSON.parse(all.body);
+
+  assert.equal(body.by_status.pending, 3,
+    'by_status should answer the question the rows would otherwise have to be counted for');
+  assert.equal(body.count, body.submissions.length,
+    'count is how many came back, and should say so by matching');
+});
+
+test('by_status describes the event, not the filter', async () => {
+  // Otherwise a filtered call answers its own question tautologically -- ask for
+  // the pending ones and be told how many pending ones you were sent -- and the
+  // denominator, which is the useful part, disappears exactly when you narrow.
+  const { app, slug: event } = await organizerApp();
+  await post(app, `/e/${event}/forms`, { internal_name: 'CFP', with_defaults: '1' });
+  const form = (await get(app, `/e/${event}/forms`)).body.match(/\/forms\/([a-z0-9-]+)"/)[1];
+  await post(app, `/submit/${event}/${form}`, {
+    title: 'One', description: 'x', format: 'talk-30-min', track: 'ai-engineering',
+    'first-name': 'A', 'last-name': 'B', email: 'a@example.com', biography: 'Engineer.',
+  });
+
+  const filtered = await get(app, `/api/events/${event}/submissions?status=accepted`);
+  const body = JSON.parse(filtered.body);
+
+  assert.equal(body.count, 0, 'nothing is accepted yet');
+  assert.equal(body.by_status.pending, 1, 'but the event still has one pending, and should say so');
+  assert.equal(body.filtered, true, 'and should say that what came back was narrowed');
+});

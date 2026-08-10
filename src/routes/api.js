@@ -35,7 +35,10 @@ export function mountApi(router) {
     + 'which is where to get the room you have to name before you can schedule anything.');
 
   router.get('/api/events/:event/submissions', listSubmissions,
-    'Submissions. ?status=pending|accept_queue|decline_queue|accepted|declined|withdrawn|draft, ?q=text, ?track=slug.');
+    'Submissions. ?status=pending|accept_queue|decline_queue|accepted|declined|withdrawn|draft, '
+    + '?q=text, ?track=slug. Every reply carries by_status for the whole event, so '
+    + '"how many are still waiting" is a value to read rather than rows to count; `count` is '
+    + 'only how many came back.');
 
   router.get('/api/events/:event/submissions/:code', getSubmission,
     'One submission by code, with speakers, reviews, and schedule.');
@@ -227,9 +230,22 @@ function listSubmissions(ctx) {
   const rows = ctx.db.prepare(`${SUBMISSION_SELECT} WHERE ${where.join(' AND ')} ORDER BY s.code`)
     .all(...args);
 
+  // `by_status` is the whole event, not the filtered rows, so that the answer to
+  // "how many are still waiting" travels with the list rather than having to be
+  // counted out of it.
+  //
+  // A model asked exactly that fetched this route unfiltered and answered 6 from
+  // a list of 19 whose true pending count was 4. Nothing in the data misled it;
+  // it simply counted wrong, and `count` at the top -- which is the number of
+  // rows returned -- is a plausible wrong answer sitting where an answer should
+  // be. This app has been here before: `conf tasks` printed twenty rows of four
+  // kinds and a reader had to filter by eye, and the fix was to let them ask the
+  // question instead of scanning for it (USABILITY-LOG, finding 2).
   return json({
     event: event.slug,
     count: rows.length,
+    filtered: Boolean(status || track || q) || undefined,
+    by_status: statusCounts(ctx.db, event.id),
     submissions: rows.map((s) => submissionShape(ctx.db, s)),
   });
 }
