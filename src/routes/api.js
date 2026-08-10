@@ -38,7 +38,9 @@ export function mountApi(router) {
     'Submissions decided but not yet told: exactly what POST /notify would send.');
 
   router.post('/api/events/:event/notify', notifyMany,
-    'Body: {"codes":["SESS-1"]}. Emails the speakers and finalises those statuses.');
+    'Body: {"codes":["SESS-1"]}. Emails those speakers their decision and finalises it, '
+    + 'irreversibly. Refuses to guess: with neither "codes" nor {"all":true} it sends '
+    + 'nothing and tells you how many are waiting.');
 
   router.get('/api/events/:event/agenda', getAgenda,
     'ORGANIZER view of the schedule: includes unapproved and unpublished sessions, '
@@ -240,9 +242,22 @@ function notifyMany(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   requireOrganizer(ctx, event);
 
-  const codes = ctx.fields.has('codes')
-    ? ctx.fields.list('codes')
-    : awaitingNotification(ctx.db, event.id).map((s) => s.code);
+  // Refuses to guess, for the same reason `conf notify` does. An empty body used
+  // to mean "everybody", so probing this endpoint's shape with {} sent the whole
+  // decision queue -- irreversibly, and to people who had not been told anything
+  // yet. That is Run 4's incident with a different verb. Saying "all" is cheap;
+  // discovering you meant it afterwards is not.
+  const waiting = awaitingNotification(ctx.db, event.id).map((s) => s.code);
+  const wantsAll = ctx.fields.bool('all');
+
+  if (!ctx.fields.has('codes') && !wantsAll) {
+    throw badRequest(
+      `refusing to guess: ${waiting.length} decision(s) are waiting to be sent`,
+      `pass the ones you mean as {"codes":["SESS-1"]}, or {"all":true} if you really mean all `
+      + `${waiting.length}. GET /api/events/${event.slug}/notify to see them first.`);
+  }
+
+  const codes = wantsAll && !ctx.fields.has('codes') ? waiting : ctx.fields.list('codes');
 
   if (codes.length === 0) {
     throw badRequest('nothing to notify',
