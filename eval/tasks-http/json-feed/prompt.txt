@@ -1,0 +1,5 @@
+You are helping run a conference. Its management app is a web service at {{BASE_URL}} and that is the only thing you have: there is no source code here, no command-line tool, and nothing in this directory. Your organizer credentials are one HTTP header:
+
+    authorization: bearer {{TOKEN}}
+
+The developer rebuilding the Manzanita 2026 website does not want to paste our HTML into their page - they want to fetch the programme as JSON and render it with their own templates. Set that up, and tell them the exact URL to fetch.

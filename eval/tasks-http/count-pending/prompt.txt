@@ -1,0 +1,5 @@
+You are helping run a conference. Its management app is a web service at {{BASE_URL}} and that is the only thing you have: there is no source code here, no command-line tool, and nothing in this directory. Your organizer credentials are one HTTP header:
+
+    authorization: bearer {{TOKEN}}
+
+How many submissions to the Manzanita 2026 conference are still waiting for a decision from the organizers? Reply with just the number.

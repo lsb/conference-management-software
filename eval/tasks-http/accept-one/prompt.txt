@@ -1,0 +1,5 @@
+You are helping run a conference. Its management app is a web service at {{BASE_URL}} and that is the only thing you have: there is no source code here, no command-line tool, and nothing in this directory. Your organizer credentials are one HTTP header:
+
+    authorization: bearer {{TOKEN}}
+
+The organizers of Manzanita 2026 have decided to accept the submission with code SESS-15. Record that decision. Do not send any email to the speaker yet.

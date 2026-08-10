@@ -19,22 +19,48 @@
 // See docs/EVAL.md for how to write a task and why the rules are what they are.
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = dirname(EVAL_DIR);
-const TASKS_DIR = join(EVAL_DIR, 'tasks');
 const ATTEMPTS = Number(process.env.EVAL_ATTEMPTS ?? 5);
 const REQUIRED = Number(process.env.EVAL_REQUIRED ?? 3);
+
+/**
+ * Two suites, asking two different questions.
+ *
+ * The default suite runs the model in the repository. It has AGENTS.md, it has
+ * `bin/conf`, it can read the source. That measures whether somebody who has
+ * been handed the project can operate it.
+ *
+ * `--http` runs it in an EMPTY directory with nothing but a URL and a token, so
+ * `GET /llms.txt` and the routes it describes carry the entire load. That is the
+ * harder and more honest question, because it is the situation of anybody
+ * pointed at a deployment: an evaluator, a contractor, an agent. Nothing about
+ * how the app is *packaged* can help it -- only what the app *says*.
+ */
+const HTTP_MODE = process.argv.includes('--http');
+const TASKS_DIR = join(EVAL_DIR, HTTP_MODE ? 'tasks-http' : 'tasks');
+const BASE_URL = (process.env.BASE_URL ?? 'http://127.0.0.1:8080').replace(/\/+$/, '');
 
 if (REQUIRED > ATTEMPTS) {
   console.error(`cannot require ${REQUIRED} passes out of ${ATTEMPTS} attempts`);
   process.exit(64);
 }
 
-const only = process.argv[2] ?? null;
+const only = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? null;
+
+if (HTTP_MODE) {
+  const health = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}',
+    `${BASE_URL}/healthz`], { encoding: 'utf8' });
+  if (health.stdout?.trim() !== '200') {
+    console.error(`no server answering at ${BASE_URL}/healthz (got ${health.stdout?.trim() || 'nothing'}).`);
+    console.error('The HTTP suite talks to a running server. Start one: npm start');
+    process.exit(1);
+  }
+}
 
 const tasks = existsSync(TASKS_DIR)
   ? readdirSync(TASKS_DIR, { withFileTypes: true })
@@ -82,9 +108,32 @@ for (const task of tasks) {
       }
     }
 
+    // In HTTP mode the model works from an empty directory it cannot escape
+    // usefully, and everything it is given travels in the prompt: a URL and a
+    // token, exactly what a person handed a deployment would have. A fresh
+    // token per attempt, so attempt N cannot reuse attempt N-1's.
+    let workingDir = ROOT_DIR;
+    let filledPrompt = prompt;
+
+    if (HTTP_MODE) {
+      workingDir = join(runDir, `${task}.attempt-${n}.cwd`);
+      rmSync(workingDir, { recursive: true, force: true });
+      mkdirSync(workingDir, { recursive: true });
+
+      const minted = spawnSync('node', [join(EVAL_DIR, 'mint-token.js')],
+        { cwd: ROOT_DIR, encoding: 'utf8' });
+      if (minted.status !== 0) {
+        console.error(`  could not mint a token: ${minted.stderr?.trim()}`);
+        break;
+      }
+      filledPrompt = prompt
+        .replaceAll('{{BASE_URL}}', BASE_URL)
+        .replaceAll('{{TOKEN}}', minted.stdout.trim());
+    }
+
     const tracePath = join(runDir, `${task}.attempt-${n}.trace.txt`);
     const began = Date.now();
-    const run = spawnSync(join(EVAL_DIR, 'ask-local.sh'), [ROOT_DIR, prompt], {
+    const run = spawnSync(join(EVAL_DIR, 'ask-local.sh'), [workingDir, filledPrompt], {
       cwd: ROOT_DIR,
       encoding: 'utf8',
       env: { ...process.env, LOCAL_TRACE: tracePath },

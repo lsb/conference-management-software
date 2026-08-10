@@ -41,14 +41,54 @@ $ eval/ask-local.sh . "How many .sql files are in src/migrations? Answer with ju
 Environment: `LOCAL_MODEL` (default `gemma4:12b-cpu`), `LOCAL_TIMEOUT` (seconds,
 default 420), `LOCAL_TRACE` (file to capture the tool trace, default discarded).
 
-## Running the suite
+## Two suites, asking two different questions
 
 ```sh
-node eval/run-eval.js              # every task
+node eval/run-eval.js              # every task, in the repository
 node eval/run-eval.js <task-id>    # just one
+
+node eval/run-eval.js --http       # every task, from an EMPTY directory
+node eval/run-eval.js --http <id>
 
 EVAL_ATTEMPTS=3 EVAL_REQUIRED=1 node eval/run-eval.js   # the old, looser bar
 ```
+
+**The default suite** runs the model inside the repository. It has `AGENTS.md`,
+it has `bin/conf`, it can read the source. That measures whether somebody handed
+the project can operate it.
+
+**`--http` runs it in an empty directory** with nothing but a URL and an API
+token in its prompt — no repository, no command line, no source. `GET /llms.txt`
+and the routes it describes carry the entire load. This is the harder and more
+honest question, because it is the situation of everybody who meets a
+deployment: an evaluator, a contractor, an agent. Nothing about how the app is
+*packaged* can help; only what the app *says* about itself.
+
+It needs a server running (`npm start`) and re-seeds between attempts, so point
+it at a throwaway instance, not one you care about:
+
+```sh
+npm start &
+node eval/run-eval.js --http
+BASE_URL=https://conf.example.com node eval/run-eval.js --http   # a deployment
+```
+
+Each attempt gets a freshly minted token (`eval/mint-token.js`) and a fresh
+empty working directory under `eval/runs/<timestamp>/`, so attempt N cannot
+coast on attempt N-1. Prompts use `{{BASE_URL}}` and `{{TOKEN}}` placeholders.
+
+### Watching one
+
+The server's own log is the other half of the trace, and says what the model was
+told when it got something wrong:
+
+```sh
+CONF_LOG=verbose npm start
+403 POST /e/manzanita-2026/notify 0.4ms -- refusing to guess: 4 decisions are waiting | pass the ones you mean as {"codes":["SESS-1"]}, or {"all":true}
+```
+
+`CONF_LOG=verbose` adds query strings with tokens redacted, which is what you
+want when you are trying to see which parameters a model guessed at.
 
 Results are written to `eval/runs/<timestamp>/` and summarised on stdout. Append
 the summary to `USABILITY-LOG.md` when it represents a real checkpoint.
