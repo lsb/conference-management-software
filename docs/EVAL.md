@@ -39,7 +39,9 @@ $ eval/ask-local.sh . "How many .sql files are in src/migrations? Answer with ju
 ```
 
 Environment: `LOCAL_MODEL` (default `gemma4:12b-cpu`), `LOCAL_TIMEOUT` (seconds,
-default 420), `LOCAL_TRACE` (file to capture the tool trace, default discarded).
+default 420, and 900 for the `--http` suite because an HTTP task is several
+round trips where a `conf` command is one), `LOCAL_TRACE` (file to capture the
+tool trace, default discarded).
 
 ## Two suites, asking two different questions
 
@@ -70,7 +72,6 @@ it at a throwaway instance, not one you care about:
 ```sh
 npm start &
 node eval/run-eval.js --http
-BASE_URL=https://conf.example.com node eval/run-eval.js --http   # a deployment
 ```
 
 Each attempt gets a freshly minted token (`eval/mint-token.js`) and a fresh
