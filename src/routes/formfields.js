@@ -7,6 +7,7 @@
 import { html, raw } from '../http/html.js';
 import { badRequest } from '../http/router.js';
 import { now } from '../db.js';
+import { matches, OPERATORS } from '../core/routing.js';
 
 /**
  * Progressive enhancement for conditional questions.
@@ -166,17 +167,22 @@ export function conditionsFor(db, formId) {
   ).all(formId);
 }
 
-/** Whether a condition holds for a given set of answers. */
+/**
+ * Whether a condition holds for a given set of answers.
+ *
+ * The comparison itself lives in src/core/routing.js, because a routing rule
+ * asks the same question about the same answer -- "is Track retrieval?" -- and
+ * the two must never disagree about what `includes` means.
+ *
+ * An operator this file does not recognise still shows the question, which is
+ * the behaviour that was here before and is deliberate: a question hidden by a
+ * rule nobody can read is a question that silently stops being asked. `matches`
+ * answers false for an unrecognised operator instead, which is the right answer
+ * for routing -- do not act on a rule you cannot read -- and the wrong one here.
+ */
 export function conditionHolds(condition, answerOf) {
-  const actual = String(answerOf(condition.when_slug) ?? '');
-  switch (condition.operator) {
-    case 'equals': return actual === condition.value;
-    case 'not_equals': return actual !== condition.value;
-    case 'includes': return actual.split(',').map((v) => v.trim()).includes(condition.value);
-    case 'is_blank': return actual === '';
-    case 'is_present': return actual !== '';
-    default: return true;
-  }
+  if (!OPERATORS.some((o) => o.value === condition.operator)) return true;
+  return matches(condition.operator, answerOf(condition.when_slug), condition.value);
 }
 
 /**

@@ -9,8 +9,9 @@
 import { html, page, raw } from '../http/html.js';
 import { ok, redirect, badRequest, notFound } from '../http/router.js';
 import { now, uniqueSlug } from '../db.js';
-import { fieldsOf, isClosed } from './formfields.js';
-import { findEvent, requireOrganizer, organizerNav, empty, dateOnly } from './shared.js';
+import { fieldsOf, isClosed, optionResolver } from './formfields.js';
+import { OPERATORS, needsValue, operatorLabel, rulesFor, recentRouting } from '../core/routing.js';
+import { findEvent, requireOrganizer, organizerNav, empty, dateOnly, when } from './shared.js';
 
 /**
  * Field types an organizer can add, and what each is for.
@@ -50,6 +51,20 @@ const MAPPINGS = [
   { value: 'person.company', label: 'Speaker company' },
 ];
 
+/**
+ * How a routing outcome reads on screen.
+ *
+ * "Nothing matched" and "partly applied" are not errors, but they are not
+ * successes either, and colouring them the same as a clean route is how a form
+ * with a broken rule looks fine for a month.
+ */
+const OUTCOME_LABEL = {
+  routed: 'Routed', partial: 'Partly applied', no_match: 'No rule matched', failed: 'Failed',
+};
+const OUTCOME_PILL = {
+  routed: 'accepted', partial: 'pending', no_match: 'draft', failed: 'declined',
+};
+
 export function mountFormBuilder(router) {
   router.get('/e/:event/forms', formList, 'Submission forms for this event.');
   router.post('/e/:event/forms', createForm, 'Create a submission form. Body: internal_name.');
@@ -65,6 +80,16 @@ export function mountFormBuilder(router) {
   router.post('/e/:event/forms/:form/conditions', addCondition,
     'Show a question only when another is answered a certain way.');
   router.post('/e/:event/forms/:form/conditions/:id/delete', deleteCondition, 'Remove a rule.');
+
+  router.post('/e/:event/forms/:form/routing', addRoutingRule,
+    'Route arriving proposals by their answer to a category question. '
+    + 'Body: field (a question about the session), operator=equals|not_equals|includes|is_present|is_blank, '
+    + 'value, and at least one action: plan (a review round slug), track (a track slug), '
+    + 'reviewers (how many to assign, default 2). The first matching rule wins.');
+  router.post('/e/:event/forms/:form/routing/:id/delete', deleteRoutingRule,
+    'Remove a routing rule. What it already did stays recorded on those submissions.');
+  router.post('/e/:event/forms/:form/routing/:id/move', moveRoutingRule,
+    'Change which routing rule is tried first. Body: direction=up|down.');
 }
 
 function findForm(ctx, event, slug) {
@@ -222,6 +247,28 @@ function formDetail(ctx) {
       WHERE t.form_id = ?`,
   ).all(form.id);
 
+  // Routing reads an answer off the submission, so the questions it can read
+  // are the ones about the session. A question about the speaker is stored on
+  // the person, and a rule on it would compare against nothing forever.
+  const routable = sections.abstract.filter((f) => !String(f.maps_to ?? '').startsWith('person.'));
+  const rules = rulesFor(ctx.db, form.id);
+  const decisions = recentRouting(ctx.db, form.id);
+  const options = optionResolver(ctx.db, event.id);
+  const plans = ctx.db.prepare(
+    `SELECT ep.*, (SELECT count(*) FROM plan_reviewer WHERE plan_id = ep.id) AS pool
+       FROM evaluation_plan ep WHERE ep.event_id = ? ORDER BY ep.round, ep.created_at`,
+  ).all(event.id);
+  const tracks = ctx.db.prepare(
+    'SELECT * FROM track WHERE event_id = ? ORDER BY sort_order, name').all(event.id);
+
+  // The comparison value is a slug, and a typo in one is a rule that never
+  // fires and never says so. Listing the answers each dropdown can actually
+  // produce is what makes that avoidable at the point of writing the rule --
+  // the add form re-checks it, and so does anything posting here with curl.
+  const answerable = routable
+    .map((f) => ({ field: f, choices: options(f) }))
+    .filter((entry) => entry.choices.length > 0);
+
   const fieldRows = (section) => html`
     ${sections[section].length === 0 ? empty('No questions in this section yet.') : html`
       <table>
@@ -363,6 +410,107 @@ function formDetail(ctx) {
             <input type="text" id="value" name="value" placeholder="workshop"></div>
           <div style="flex:0 0 auto"><button type="submit">Add rule</button></div>
         </form>`}
+
+      <h2>Routing</h2>
+      <p class="sub">Where a proposal goes, decided by what it says. A rule reads one
+        answer and, when it matches, hands the submission to a review round and/or sets
+        its track &mdash; so nobody re-keys anything after it arrives.
+        Rules are tried top to bottom and <strong>the first one that matches wins</strong>,
+        so put the most specific first.</p>
+
+      ${rules.length === 0 ? empty('No routing rules. Every proposal arrives in the pile and waits to be sorted by hand.') : html`
+        <table>
+          <thead><tr><th>Order</th><th>When</th><th>Then</th><th></th></tr></thead>
+          <tbody>
+            ${rules.map((r, i) => html`
+              <tr>
+                <td>
+                  <form method="post" class="inline"
+                        action="/e/${event.slug}/forms/${form.slug}/routing/${r.id}/move">
+                    <input type="hidden" name="direction" value="up">
+                    <button type="submit" class="secondary" ${i === 0 ? raw('disabled') : ''}
+                            aria-label="Try this rule earlier">Up</button>
+                  </form>
+                  <form method="post" class="inline"
+                        action="/e/${event.slug}/forms/${form.slug}/routing/${r.id}/move">
+                    <input type="hidden" name="direction" value="down">
+                    <button type="submit" class="secondary" ${i === rules.length - 1 ? raw('disabled') : ''}
+                            aria-label="Try this rule later">Down</button>
+                  </form>
+                </td>
+                <td><strong>${r.field_label}</strong> ${operatorLabel(r.operator)}
+                  ${needsValue(r.operator) ? html`<code>${r.value}</code>` : ''}</td>
+                <td>
+                  ${r.plan_id ? html`Review round
+                    <a href="/e/${event.slug}/evaluation/${r.plan_slug}">${r.plan_name}</a>,
+                    ${r.reviewers} reviewer(s)${r.track_id ? html`<br>` : ''}` : ''}
+                  ${r.track_id ? html`Track <strong>${r.track_name}</strong>` : ''}
+                  ${r.plan_id && r.plan_pool === 0 ? html`<br><span class="pill pending">nobody in that pool</span>
+                    <span class="muted">proposals routed here will sit unreviewed until somebody is
+                      <a href="/e/${event.slug}/evaluation/${r.plan_slug}">added to the round</a>.</span>` : ''}
+                </td>
+                <td><form method="post" class="inline"
+                      action="/e/${event.slug}/forms/${form.slug}/routing/${r.id}/delete">
+                  <button type="submit" class="secondary">Remove</button></form></td>
+              </tr>`)}
+          </tbody>
+        </table>`}
+
+      ${routable.length === 0 ? empty('Add a question about the session first: a rule needs an answer to read.')
+        : plans.length === 0 && tracks.length === 0
+          ? empty(`Nowhere to route to yet. Create a review round under Review, or a track under Settings.`)
+          : html`
+        <form method="post" action="/e/${event.slug}/forms/${form.slug}/routing">
+          <div class="row">
+            <div><label for="routing_field">When the answer to</label>
+              <select id="routing_field" name="field">
+                ${routable.map((f) => html`<option value="${f.slug}">${f.label}</option>`)}
+              </select></div>
+            <div><label for="routing_operator">is</label>
+              <select id="routing_operator" name="operator">
+                ${OPERATORS.map((o) => html`<option value="${o.value}">${o.label}</option>`)}
+              </select></div>
+            <div><label for="routing_value">this answer</label>
+              <input type="text" id="routing_value" name="value" placeholder="retrieval"></div>
+          </div>
+          <div class="row">
+            <div><label for="routing_plan">Send it to this review round</label>
+              <select id="routing_plan" name="plan">
+                <option value="">- no review round -</option>
+                ${plans.map((p) => html`<option value="${p.slug}">${p.name}${p.pool === 0 ? ' (empty pool)' : ''}</option>`)}
+              </select></div>
+            <div><label for="routing_reviewers">Reviewers <small>from that round's pool</small></label>
+              <input type="number" id="routing_reviewers" name="reviewers" value="2" min="1"></div>
+            <div><label for="routing_track">And set its track to</label>
+              <select id="routing_track" name="track">
+                <option value="">- leave the track alone -</option>
+                ${tracks.map((t) => html`<option value="${t.slug}">${t.name}</option>`)}
+              </select></div>
+            <div style="flex:0 0 auto"><button type="submit">Add routing rule</button></div>
+          </div>
+          ${answerable.length === 0 ? '' : html`
+            <p class="muted">Answers to compare against &mdash; a rule matches the slug, not the label:
+              ${answerable.map((entry) => html`<br><strong>${entry.field.label}</strong>
+                ${entry.choices.map((c) => html`<code>${c.slug}</code> `)}`)}</p>`}
+        </form>`}
+
+      ${decisions.length === 0 ? '' : html`
+        <h3>What routing has done</h3>
+        <p class="sub">The last ${decisions.length} proposal(s) through this form. Each
+          one also carries this in its own history.</p>
+        <table>
+          <thead><tr><th>Submission</th><th>Outcome</th><th>What happened</th><th>When</th></tr></thead>
+          <tbody>
+            ${decisions.map((d) => html`
+              <tr>
+                <td><a href="/e/${event.slug}/submissions/${d.code}"><code>${d.code}</code></a>
+                  <br><span class="muted">${d.title}</span></td>
+                <td><span class="pill ${OUTCOME_PILL[d.outcome]}">${OUTCOME_LABEL[d.outcome]}</span></td>
+                <td>${d.detail}</td>
+                <td>${when(d.created_at, event.timezone)}</td>
+              </tr>`)}
+          </tbody>
+        </table>`}
 
       <h2>Settings</h2>
       <form method="post" action="/e/${event.slug}/forms/${form.slug}/settings">
@@ -575,5 +723,169 @@ function deleteCondition(ctx) {
   if (!condition) throw notFound('no such rule on this form');
 
   ctx.db.prepare('DELETE FROM form_field_condition WHERE id = ?').run(condition.id);
+  return redirect(`/e/${event.slug}/forms/${form.slug}`);
+}
+
+// --- routing ---------------------------------------------------------------
+//
+// Configuration-time checks are the whole game here. A routing rule runs months
+// after it is written, on somebody else's proposal, with nobody watching; every
+// mistake that can be caught while the organizer is still looking at the screen
+// has to be caught there, and every refusal has to say what would have worked.
+
+function findRoutingRule(ctx, form) {
+  const rule = ctx.db.prepare('SELECT * FROM form_routing_rule WHERE id = ? AND form_id = ?')
+    .get(Number(ctx.params.id), form.id);
+  if (!rule) {
+    throw notFound('no such routing rule on this form',
+      'the rules and their ids are under Routing on the form page');
+  }
+  return rule;
+}
+
+function addRoutingRule(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+  const form = findForm(ctx, event, ctx.params.form);
+
+  const field = findField(ctx, form,
+    ctx.fields.require('field', 'the slug of a question about the session, for example: track'));
+
+  if (field.section !== 'abstract' || String(field.maps_to ?? '').startsWith('person.')) {
+    throw badRequest(`'${field.label}' is a question about the speaker, not about the session`,
+      'routing reads an answer stored on the proposal; pick one of the questions under '
+      + '"Questions about the session", such as Track or Format');
+  }
+
+  const operator = ctx.fields.choice('operator', OPERATORS.map((o) => o.value), 'equals');
+  // is_present and is_blank ask whether there is an answer at all, so a value
+  // alongside them would be stored and never read.
+  const value = needsValue(operator) ? ctx.fields.get('value') : '';
+
+  if (needsValue(operator) && value === '') {
+    throw badRequest(`a rule on '${field.label}' needs something to compare the answer to`,
+      "send value=<the answer>, or operator=is_present to match any answer at all");
+  }
+
+  // A comparison against something nobody can answer is a rule that never fires
+  // and never complains. Where the question has a known set of answers, the
+  // value has to be one of them.
+  const choices = optionResolver(ctx.db, event.id)(field);
+  if (value !== '' && choices.length > 0 && !choices.some((c) => c.slug === value)) {
+    throw badRequest(`'${value}' is not one of the answers to '${field.label}'`,
+      `a rule comparing against it could never match. The answers are: `
+      + choices.map((c) => c.slug).join(', '));
+  }
+
+  const planSlug = ctx.fields.get('plan');
+  const trackSlug = ctx.fields.get('track');
+  if (!planSlug && !trackSlug) {
+    throw badRequest('a routing rule has to do something',
+      `send plan=<review round slug>, track=<track slug>, or both. `
+      + `Rounds are listed at /e/${event.slug}/evaluation and tracks at /e/${event.slug}/settings`);
+  }
+
+  const plan = planSlug ? requirePlan(ctx, event, planSlug) : null;
+  const track = trackSlug ? requireTrack(ctx, event, trackSlug) : null;
+
+  const reviewers = ctx.fields.int('reviewers', 2);
+  if (reviewers < 1) {
+    throw badRequest(`a rule asking for ${reviewers} reviewer(s) would hand the proposal to nobody`,
+      'send reviewers=1 or more, or leave it out and it asks for 2');
+  }
+
+  // The first match wins, so a rule identical to an earlier one is dead code:
+  // it would sit in the list looking like it does something.
+  const duplicate = rulesFor(ctx.db, form.id).find(
+    (r) => r.field_id === field.id && r.operator === operator && r.value === value);
+  if (duplicate) {
+    throw badRequest(
+      `there is already a rule for when '${field.label}' ${operatorLabel(operator)} ${value}`.trim(),
+      'the first matching rule wins, so this one could never fire. Change that rule instead, '
+      + 'or remove it first');
+  }
+
+  const count = ctx.db.prepare('SELECT count(*) AS n FROM form_routing_rule WHERE form_id = ?')
+    .get(form.id).n;
+
+  ctx.db.prepare(
+    `INSERT INTO form_routing_rule (form_id, field_id, operator, value, plan_id, track_id,
+                                    reviewers, sort_order, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(form.id, field.id, operator, value, plan?.id ?? null, track?.id ?? null,
+    reviewers, count + 1, now());
+
+  return redirect(`/e/${event.slug}/forms/${form.slug}`);
+}
+
+function requirePlan(ctx, event, slug) {
+  const plan = ctx.db.prepare('SELECT * FROM evaluation_plan WHERE event_id = ? AND slug = ?')
+    .get(event.id, slug);
+  if (plan) return plan;
+
+  const known = ctx.db.prepare(
+    'SELECT slug FROM evaluation_plan WHERE event_id = ? ORDER BY round, created_at')
+    .all(event.id).map((p) => p.slug);
+  throw badRequest(`no review round '${slug}' in this event`,
+    known.length
+      ? `rounds are: ${known.join(', ')}`
+      : `this event has no review rounds yet; create one at /e/${event.slug}/evaluation`);
+}
+
+function requireTrack(ctx, event, slug) {
+  const track = ctx.db.prepare('SELECT * FROM track WHERE event_id = ? AND slug = ?')
+    .get(event.id, slug);
+  if (track) return track;
+
+  // Listed in the order the organizer sees them on screen, so the hint reads as
+  // the same list they are looking at.
+  const known = ctx.db.prepare(
+    'SELECT slug FROM track WHERE event_id = ? ORDER BY sort_order, name')
+    .all(event.id).map((t) => t.slug);
+  throw badRequest(`no track '${slug}' in this event`,
+    known.length
+      ? `tracks are: ${known.join(', ')}`
+      : `this event has no tracks yet; add one at /e/${event.slug}/settings`);
+}
+
+/**
+ * Remove a rule.
+ *
+ * What it already did stays in `submission_routing`, which is why that table
+ * records a sentence rather than a set of ids: "why is SESS-9 in the ML round"
+ * has to stay answerable after the rule that put it there is gone.
+ */
+function deleteRoutingRule(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+  const form = findForm(ctx, event, ctx.params.form);
+  const rule = findRoutingRule(ctx, form);
+
+  ctx.db.prepare('DELETE FROM form_routing_rule WHERE id = ?').run(rule.id);
+  return redirect(`/e/${event.slug}/forms/${form.slug}`);
+}
+
+/** Change which rule is tried first. Precedence is the whole semantics, so it is editable. */
+function moveRoutingRule(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+  const form = findForm(ctx, event, ctx.params.form);
+  const rule = findRoutingRule(ctx, form);
+
+  const direction = ctx.fields.choice('direction', ['up', 'down']);
+  const siblings = rulesFor(ctx.db, form.id);
+  const index = siblings.findIndex((r) => r.id === rule.id);
+  const swapWith = siblings[direction === 'up' ? index - 1 : index + 1];
+
+  if (swapWith) {
+    // Rewrite the whole list rather than swapping two numbers, so rules that
+    // arrived with duplicate sort_orders sort themselves out on first use.
+    const reordered = [...siblings];
+    reordered[index] = swapWith;
+    reordered[direction === 'up' ? index - 1 : index + 1] = rule;
+    const update = ctx.db.prepare('UPDATE form_routing_rule SET sort_order = ? WHERE id = ?');
+    reordered.forEach((r, i) => update.run(i + 1, r.id));
+  }
+
   return redirect(`/e/${event.slug}/forms/${form.slug}`);
 }

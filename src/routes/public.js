@@ -5,6 +5,7 @@ import { html, page, raw } from '../http/html.js';
 import { ok, redirect, badRequest, notFound } from '../http/router.js';
 import { now, slugify, uniqueSlug } from '../db.js';
 import { createSubmission, setStatus, logActivity } from '../core/submissions.js';
+import { routeSubmission } from '../core/routing.js';
 import { queueEmail, getTemplate } from '../core/mail.js';
 import { createMagicLink, SESSION_COOKIE, consumeMagicLink } from '../core/auth.js';
 import { cookieHeader } from '../http/request.js';
@@ -364,6 +365,21 @@ function postCfp(ctx) {
       'INSERT OR REPLACE INTO submission_answer (submission_id, field_id, value) VALUES (?, ?, ?)',
     ).run(submission.id, field.id, value);
   }
+
+  // Category-based routing, now that every answer is saved: the form's rules
+  // read the submission and decide where it goes -- which review round picks it
+  // up, which track it belongs in -- so an organizer is not sorting a pile by
+  // hand on Monday. See src/core/routing.js.
+  //
+  // Only for a real submission. A draft is a promise to come back, and putting
+  // half an idea in front of a reviewer would waste their time and embarrass
+  // its author. A draft should be routed at the moment it is submitted for
+  // real, which is one call to this same function from the portal's submit step
+  // (src/routes/portal.js). That call is not wired yet.
+  //
+  // This never throws: routing that cannot be carried out is recorded against
+  // the submission rather than costing a stranger their proposal.
+  if (!asDraft) routeSubmission(ctx.db, submission.id, { actorPersonId: person.id });
 
   const token = createMagicLink(ctx.db, person.id, event.id);
   const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
