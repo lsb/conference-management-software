@@ -28,11 +28,21 @@ describe(`liveness and the route table (${BASE_URL})`, () => {
   });
 
   it('serves /llms.txt, with the recipes that make the app operable', async () => {
-    const llms = await anyone.get('/llms.txt');
-    expectStatus(llms, 200);
-    assert.ok(llms.body.length > 1000, `llms.txt looks truncated: ${llms.body.length} bytes`);
+    const brief = await anyone.get('/llms.txt');
+    expectStatus(brief, 200);
+    assert.ok(brief.body.length > 1000, `llms.txt looks truncated: ${brief.body.length} bytes`);
+    expectBodyContains(brief, '## Getting in',
+      'the short form has to say how to authenticate, or nothing below it is reachable');
+    expectBodyContains(brief, 'authorization: bearer',
+      'and it has to show the header, because a caller copies the recipe, not the prose');
 
-    // The route table is generated from the code, so these are load-bearing.
+    // The full route table is behind ?all=1: the default is the short form,
+    // because a 25KB file is one a small model spends its whole budget reading.
+    // These promises are generated from the code, so they are load-bearing.
+    const llms = await anyone.get('/llms.txt?all=1');
+    expectStatus(llms, 200);
+    assert.ok(llms.body.length > brief.body.length,
+      '?all=1 should add the route list, not replace the recipes');
     for (const promise of [
       'GET /healthz',
       'POST /e/new',
@@ -58,7 +68,7 @@ describe(`liveness and the route table (${BASE_URL})`, () => {
   });
 
   it('actually serves every parameterless GET route it advertises', async () => {
-    const llms = await anyone.get('/llms.txt');
+    const llms = await anyone.get('/llms.txt?all=1');
     expectStatus(llms, 200);
 
     const paths = [...new Set(
@@ -105,5 +115,43 @@ describe(`liveness and the route table (${BASE_URL})`, () => {
       + 'unannounced sessions. The public feed is /embed/<event>/<slug>.');
     assert.equal(agenda.headers.get('access-control-allow-origin'), null,
       'and it must not invite another site to read the refusal either');
+  });
+});
+
+describe(`error shape (${BASE_URL})`, () => {
+  // A refusal used to cost 6,573 bytes to say two lines, because every caller
+  // got the styled page. A local model made two wrong guesses at one route, read
+  // both pages in full, and ran out of time: the errors were right and
+  // unreadable, which for something that is not a person is the same as wrong.
+
+  it('answers a script with the two lines that say something', async () => {
+    const script = new Client('a script');
+    const missing = await script.get('/no/such/route/at/all');
+
+    expectStatus(missing, 404);
+    assert.match(missing.contentType, /text\/plain/,
+      'a caller that did not ask for HTML should not be sent a stylesheet');
+    assert.ok(missing.body.length < 500,
+      `an error should be small enough to read, got ${missing.body.length} bytes`);
+    assert.match(missing.body, /llms\.txt/, 'and it should still say where to look');
+  });
+
+  it('answers a browser with the page', async () => {
+    const browser = new Client('a browser');
+    const missing = await browser.get('/no/such/route/at/all', {
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    });
+
+    expectStatus(missing, 404);
+    assert.match(missing.contentType, /text\/html/);
+  });
+
+  it('answers an API caller with JSON', async () => {
+    const script = new Client('an API caller');
+    const missing = await script.get('/api/events/no-such-event');
+
+    expectStatus(missing, 404);
+    assert.match(missing.contentType, /application\/json/);
+    assert.ok(missing.json().error, 'a JSON error should carry an `error`');
   });
 });

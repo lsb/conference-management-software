@@ -262,6 +262,23 @@ function errorResponse(err, req) {
     return json({ error: message, ...(hint ? { hint } : {}) }, { status });
   }
 
+  // Only a browser gets the styled page. Everybody else gets the two lines that
+  // actually say something.
+  //
+  // A refusal used to cost 6,573 bytes to deliver "'speaker' is not a value for
+  // applies_to / use person (one per speaker), or submission (one per session)"
+  // -- a hundred bytes of answer wrapped in a stylesheet. We watched a local
+  // model make two wrong guesses at this route, read both full pages, and run
+  // out of time; the error was right and unreadable, which for a caller that is
+  // not a person is the same as being wrong.
+  //
+  // Keyed on the caller ASKING for HTML rather than on it not asking for JSON,
+  // because curl sends `*/*` or nothing at all, and defaulting the unspecified
+  // case to the expensive answer gets it backwards for every script there is.
+  if (!(req.headers.accept ?? '').includes('text/html')) {
+    return text(`${status} ${message}\n${hint ? `${hint}\n` : ''}`, { status });
+  }
+
   return ok(page({
     title: `${status} - ${message}`,
     body: html`
