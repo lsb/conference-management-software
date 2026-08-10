@@ -123,7 +123,8 @@ function requireAnyOrganizer(ctx) {
   const events = ctx.db.prepare('SELECT id FROM event').all();
   if (events.some((e) => canOrganize(ctx.db, e.id, ctx.person))) return;
   throw forbidden('organizer access required',
-    'sign in at /login, or at /portal/sign-in with an organizer account');
+    'scripts: send `authorization: bearer <token>` (mint one at /account). '
+    + 'People: sign in at /sign-in.');
 }
 
 const eventShape = (e) => ({

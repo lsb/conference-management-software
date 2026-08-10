@@ -47,34 +47,38 @@ named `Acceptance … <timestamp>-<random>`, so anything matching
 `acceptance-conf-<timestamp>` is litter from a test run and safe to delete
 directly if that ever matters.
 
-## Off loopback you must sign in first
+## Signing in
 
-The app opens every organizer route to anyone when it is bound to `127.0.0.1`,
-and closes them everywhere else (`organizerAccessIsOpen`). Two consequences for
-a remote run, both of which the suite's failure messages spell out:
+The app behaves the same way wherever it is running: everything under `/e/` and
+`/api/` needs an organizer, on your laptop exactly as on a deployment. There is
+no longer a loopback exemption, so there is no longer a difference between a
+local run and a remote one for this suite to work around.
 
-1. `POST /e/new` records an owner only when somebody is signed in. An event
-   created anonymously on a remote box is unmanageable by anyone, permanently.
-   The suite therefore signs in *before* it creates anything.
-2. The only sign-in this suite can drive is `POST /login`, which is disabled off
-   loopback unless the deployment runs with `DEMO_LOGIN=1`, and which never
-   creates a person.
+`POST /e/new` records an owner only when somebody is signed in, and an event
+created anonymously would be unmanageable by anyone, permanently. So the suite
+signs in *before* it creates anything, by whichever door the deployment has
+open, most-proving first:
 
-So certifying a remote deployment currently needs both:
+1. **Email and password** at `POST /sign-in`. This is the path a real organizer
+   walks and it works on any deployment. Set `ACCEPTANCE_ORGANIZER_EMAIL` and
+   `ACCEPTANCE_ORGANIZER_PASSWORD`; they default to the demo administrator that
+   `npm run seed` creates and announces.
+2. **The setup token** at `POST /setup/claim`, if `ACCEPTANCE_SETUP_TOKEN` is
+   set. Claiming is idempotent, so this is safe to run every time, and it is how
+   you certify an instance nobody has claimed yet.
+3. **A demo persona** at `POST /login`, which only exists where the deployment
+   runs with `DEMO_LOGIN=1`.
+
+The order matters. Asking a deployment to switch `DEMO_LOGIN` on so that a test
+can run is weakening the thing under test, so it is the last resort rather than
+the instruction.
 
 ```sh
-# on the deployment
-DEMO_LOGIN=1 HOST=0.0.0.0 npm start
-
-# from anywhere
 BASE_URL=https://conf.example.com \
-ACCEPTANCE_ORGANIZER_EMAIL=someone@your-org.example \
+ACCEPTANCE_ORGANIZER_EMAIL=you@your-org.example \
+ACCEPTANCE_ORGANIZER_PASSWORD='...' \
   npm run test:http
 ```
-
-where that address already belongs to a person on that instance. There is no
-HTTP route that creates the first organizer, or that grants organizer rights on
-an event to anybody but its creator.
 
 ## Reading the output
 

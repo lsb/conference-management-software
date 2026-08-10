@@ -54,7 +54,8 @@ function requireAnyOrganizer(ctx) {
   // And it refused with 400 rather than 403, so a caller checking for "am I
   // allowed?" sailed straight past it and read the failure as a bad request.
   throw forbidden('organizer access required',
-    'sign in at /login, or at /portal/sign-in with an organizer account');
+    'scripts: send `authorization: bearer <token>` (mint one at /account). '
+    + 'People: sign in at /sign-in.');
 }
 
 function crmNav(current) {
