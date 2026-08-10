@@ -8,4 +8,4 @@ header on every request, reading it rather than retyping it:
     AUTH="authorization: bearer $(cat .conf-token)"
     curl -s -H "$AUTH" {{BASE_URL}}/api/events
 
-Manzanita 2026 wants proposals about retrieval to go to the machine-learning review round automatically, as they arrive, instead of being sorted by hand afterwards. Set that up.
+Manzanita 2026 wants every proposal on the "Evaluation and Reliability" track to go into the review round automatically as it arrives, instead of somebody assigning them by hand afterwards. Set that up.
