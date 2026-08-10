@@ -1,0 +1,11 @@
+You are helping run a conference. Its management app is a web service at
+{{BASE_URL}}, and that is all you have: no source code, no command-line tool,
+and nothing else in this directory.
+
+Your organizer credentials are an API token in `.conf-token`. Send it as a
+header on every request, reading it rather than retyping it:
+
+    AUTH="authorization: bearer $(cat .conf-token)"
+    curl -s -H "$AUTH" {{BASE_URL}}/api/events
+
+Manzanita 2026 wants proposals about retrieval to go to the machine-learning review round automatically, as they arrive, instead of being sorted by hand afterwards. Set that up.

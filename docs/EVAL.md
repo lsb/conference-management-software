@@ -128,6 +128,21 @@ eval/tasks/count-pending-decisions/
 `check.sh` may also inspect the database, which is how we test tasks whose point
 is a side effect ("accept SESS-3") rather than an answer.
 
+**Test what the customer asked for.** The HTTP suite was seeded by copying the
+repo-mode task list across, and nobody re-checked it against the brief. The
+result was a suite with a task for `json-feed` -- feature 9, which the customer
+struck through, and which their own screenshot annotates "OPTIONAL" -- and no
+task for the submitter confirmation email ("must have"), the success page and
+portal handoff ("make sure this works"), or category-based routing, which is the
+second half of feature 1.
+
+Effort follows the failing task. So a suite pointed at the wrong features spends
+its budget hardening them, which is what happened: four fix cycles went into the
+one task that maps to a struck requirement. Some of what they found helped
+everything -- the missing docs pointer, the 25KB llms.txt -- but that was luck,
+not aim. Check new tasks against `docs/REQUIREMENTS.md` before adding them, and
+re-check the existing ones when the brief changes.
+
 ### Rules for a fair task
 
 **Ask for something that cannot be guessed.** A yes/no question passes 50% of the
