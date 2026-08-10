@@ -274,8 +274,10 @@ function errorResponse(err, req) {
 // --- meta routes -----------------------------------------------------------
 
 function mountMeta(router) {
-  router.get('/llms.txt', (ctx) => text(llmsTxt(ctx.router)),
-    'This file. A plain-text index of every route, for humans and for models.');
+  router.get('/llms.txt', (ctx) => text(llmsTxt(ctx.router, { brief: ctx.query.has('brief') })),
+    'This file. How to authenticate, worked examples for the common jobs, then every '
+    + 'route. Add ?brief=1 for just the first two, which is about a quarter of the size '
+    + 'and is all most jobs need.');
 
   router.get('/healthz', (ctx) => {
     const { n } = ctx.db.prepare('SELECT count(*) AS n FROM event').get();
@@ -290,7 +292,7 @@ function mountMeta(router) {
  * is listed, and a route that is deleted disappears. This is the single file we
  * expect an unfamiliar assistant to read before doing anything.
  */
-export function llmsTxt(router) {
+export function llmsTxt(router, { brief = false } = {}) {
   const documented = router.routes.filter((r) => r.doc);
   const groups = new Map();
   for (const route of documented) {
@@ -309,6 +311,10 @@ export function llmsTxt(router) {
     'Every page is plain HTML with plain forms, so everything here works with curl.',
     'Records are addressed by readable slugs and session codes (SESS-1), never by',
     'opaque ids. There is also a command line covering most of this: `bin/conf --help`.',
+    '',
+    'This file has three parts: how to get in, worked examples of the common jobs,',
+    'and then a complete list of every route. The last part is three quarters of the',
+    `length and most jobs never need it -- ${''}add ?brief=1 to this URL to leave it out.`,
     '',
     '## Getting in',
     '',
@@ -433,6 +439,20 @@ export function llmsTxt(router) {
     '## Every route',
     '',
   ];
+
+  // Everything above is about six kilobytes; the route list below is eighteen
+  // more. A small model on CPU that curls the whole file spends most of its
+  // budget reading a catalogue it did not need -- we watched one do exactly
+  // that, get through all 167 routes, and answer nothing. ?brief=1 stops here.
+  if (brief) {
+    lines.push(
+      `Omitted: ${documented.length} routes, grouped by area.`,
+      'Fetch /llms.txt without ?brief=1 for the full list. Most jobs are covered by',
+      'the recipes above and do not need it.',
+      '',
+    );
+    return `${lines.join('\n')}\n`;
+  }
 
   for (const [group, routes] of groups) {
     lines.push(`### ${group}`, '');
