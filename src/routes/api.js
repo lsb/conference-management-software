@@ -200,12 +200,20 @@ function listEvents(ctx) {
   // An instruction that induces a broken command is worse than no instruction:
   // it costs the mistake AND the chance to catch it. A whole URL gets copied
   // whole.
+  // Before the data, not after it. A reader going top-down meets whatever comes
+  // first and starts working from it; put the pointer underneath an array and it
+  // is read, if at all, after the decisions have been made. The submission list
+  // already puts `by_status` above the rows for this reason and this route was
+  // not given the same treatment.
+  //
+  // Testable rather than obvious: if the pass rate does not move, the ordering
+  // idea is wrong and should be recorded as wrong.
   return json({
-    events: events.map(eventShape),
     docs: `${ctx.origin}/llms.txt`,
     docs_all_routes: `${ctx.origin}/llms.txt?all=1`,
     docs_note: 'Start at `docs`: how to authenticate, and a worked example of each '
       + 'common job. `docs_all_routes` is every route this app serves.',
+    events: events.map(eventShape),
   });
 }
 
@@ -451,6 +459,21 @@ function getAgenda(ctx) {
 
   return json({
     event: event.slug,
+    // Said in the reply, not only in the route's documentation.
+    //
+    // This route returns the programme as JSON, so it looks exactly like the
+    // answer to "give the website team a JSON feed" -- and it is not one. It
+    // carries sessions that are scheduled but unapproved and unannounced, and it
+    // sends no CORS header, so it cannot be fetched from another site at all. A
+    // model asked for a feed landed here, saw JSON of the programme, and told
+    // the developer to use it.
+    //
+    // llms.txt has always said this. The response did not, and the response is
+    // where somebody is standing when they make the mistake.
+    not_a_public_feed: 'Organizer view: includes unapproved and unannounced sessions, '
+      + 'and sends no CORS header, so another site cannot fetch it. To give somebody a '
+      + `feed, create an embed: POST ${ctx.origin}/e/${event.slug}/embeds with `
+      + 'name, feed=agenda, format=json. The reply carries the public url.',
     timezone: event.timezone,
     scheduled: sessions.map((s) => ({
       code: s.code, title: s.title, room: s.room_slug, track: s.track_slug,

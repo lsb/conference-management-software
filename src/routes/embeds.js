@@ -9,7 +9,7 @@
 // request, with no copy to keep in sync.
 
 import { html, page, raw } from '../http/html.js';
-import { ok, redirect, badRequest, notFound } from '../http/router.js';
+import { ok, redirect, badRequest, notFound, json } from '../http/router.js';
 import { now, uniqueSlug } from '../db.js';
 import { FEEDS, FORMATS, renderFeed, showsPeople } from '../core/feeds.js';
 import { findEvent, requireOrganizer, organizerNav, empty } from './shared.js';
@@ -113,6 +113,30 @@ function createEmbed(ctx) {
     ctx.fields.choice('feed', FEEDS.map((f) => f.value), 'agenda'),
     ctx.fields.choice('format', FORMATS.map((f) => f.value), 'html'),
     now());
+
+  // Hand back the URL, because the URL is the whole point of the request.
+  //
+  // This used to be a bare 303 to the admin page: empty body, and a Location
+  // naming the screen where you configure the thing rather than the address you
+  // give the person who asked for it. Somebody told "set up a JSON feed and tell
+  // them the exact URL to fetch" did the creation correctly and then had nothing
+  // to report -- the public address is /embed/<event>/<slug>, and we never said
+  // so anywhere in the reply.
+  //
+  // A browser still gets the page. Anything else gets the answer.
+  if (!(ctx.headers?.accept ?? '').includes('text/html')) {
+    return json({
+      slug: embed.slug,
+      name: embed.name,
+      feed: embed.feed,
+      format: embed.format,
+      url: publicUrl(ctx, event, embed),
+      note: 'That url is the public, cross-origin feed: give it to whoever asked for it. '
+        + 'Format is a property of this embed, so a JSON feed is one made with '
+        + 'format=json; adding .json to an HTML embed\'s URL converts nothing.',
+      configure: `${ctx.origin}/e/${event.slug}/embeds/${embed.slug}`,
+    }, { status: 201 });
+  }
 
   return redirect(`/e/${event.slug}/embeds/${embed.slug}`);
 }
