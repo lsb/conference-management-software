@@ -19,7 +19,9 @@
 // See docs/EVAL.md for how to write a task and why the rules are what they are.
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import {
+  readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync, renameSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -166,6 +168,12 @@ for (const task of tasks) {
 
     if (run.status !== 0 && toolCalls === 0 && answer === '') {
       stalls++;
+      // Keep the evidence. The retry reuses this attempt number and would
+      // otherwise write over the very trace that shows the stall, which is the
+      // only thing that could later prove these were stalls and not something
+      // we talked ourselves out of looking at.
+      if (existsSync(tracePath)) renameSync(tracePath, `${tracePath}.stall-${stalls}`);
+
       process.stdout.write(`  attempt ${n}: STALLED (${seconds}s, no tool calls) - not counted`
         + `${stalls >= MAX_STALLS ? ', giving up on this task' : ', retrying'}\n`);
       if (stalls >= MAX_STALLS) break;
