@@ -1,12 +1,12 @@
 // The organizer's screens.
 
 import { html, page, raw } from '../http/html.js';
-import { ok, redirect, badRequest } from '../http/router.js';
+import { ok, json, redirect, badRequest } from '../http/router.js';
 import { decide, notify, awaitingNotification, participantsOf, setStatus } from '../core/submissions.js';
 import { outstandingTasks, runReminders } from '../core/tasks.js';
 import {
   findConflicts, unscheduledSessions, scheduledSessions, conflictsForSlot, placeSession,
-  agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, autoSchedule, localTime,
+  agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, candidateSlots, autoSchedule, localTime,
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
 import { contentPanel } from './content.js';
@@ -37,16 +37,21 @@ export function mountOrganizer(router) {
     'Send decision emails for the selected submissions and finalise their status.');
 
   router.post('/e/:event/submissions/:code/schedule', postSchedule,
-    'Put a session in a room at a time, refusing the move if it would clash.');
+    'Put a session in a room at a time, refusing the move if it would clash. '
+    + 'Body: room, starts_at, ends_at (wall clock in the event timezone). '
+    + 'With accept: application/json, answers {code, room, starts_at, ends_at, published, invited}.');
 
   router.get('/e/:event/agenda', agenda,
-    'The schedule. ?view=list|day|week|track|room|conflicts.');
+    'The schedule. ?view=list|day|week|track|room|conflicts. ?view=week is the '
+    + 'drag-and-drop grid; &move=SESS-3 is the same thing without a mouse.');
 
   router.post('/e/:event/agenda/autoschedule', postAutoSchedule,
-    'Place every unscheduled session in the first slot that does not clash. A draft, not a timetable.');
+    'Place every unscheduled session in the first slot that does not clash. A draft, not a timetable. '
+    + 'With accept: application/json, answers {placed: [...], remaining}.');
 
   router.post('/e/:event/agenda/publish', postPublish,
-    'Put every approved, scheduled session on the public agenda.');
+    'Put every approved, scheduled session on the public agenda. '
+    + 'With accept: application/json, answers {published, held_back: {unapproved, unscheduled}}.');
 
   router.get('/e/:event/speakers', speakers,
     'Everyone speaking, with what they still owe.');
@@ -525,7 +530,7 @@ function postNotify(ctx) {
 /** A signed-in link straight into the speaker's portal, so they never see a login form. */
 function portalUrl(ctx, event, person) {
   const token = createMagicLink(ctx.db, person.id, event.id);
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
   return `${base}/portal/${event.slug}/enter?token=${token}`;
 }
 
@@ -539,6 +544,279 @@ const VIEW_LABELS = {
   room: 'By room',
   conflicts: 'Conflicts',
 };
+
+/** What `autoSchedule` assumes a session is worth, for anything with no times yet. */
+const DEFAULT_MINUTES = 45;
+
+/**
+ * Drag-and-drop, as an enhancement over the grid the server already renders.
+ *
+ * Per D4 and D10: the feature is conflict detection, dragging is one input
+ * method for it, and the server stays the authority on what is allowed. So this
+ * script decides nothing. It reads three values the server put on the elements
+ * -- which session, how long it runs, and where its move posts to -- copies them
+ * into the form at the bottom of the page, and submits it. That is byte for byte
+ * the request the "Put here" button makes and the request the scheduling form on
+ * a submission page makes, so a clash is refused by the same code path in all
+ * three cases.
+ *
+ * Nothing here is required. With scripting off the grid still renders, "Move"
+ * still enters move mode, and every free slot still has a real submit button in
+ * it -- which is also the keyboard path, because a link and a button are
+ * operable without a mouse and a drag is not.
+ */
+const AGENDA_DRAG_SCRIPT = `
+(function () {
+  var form = document.getElementById('drop-form');
+  if (!form) return;
+
+  var held = null;
+
+  function closestWith(node, attribute) {
+    while (node && node !== document) {
+      if (node.nodeType === 1 && node.hasAttribute(attribute)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  // Wall-clock arithmetic done as string maths, so the browser's own timezone
+  // never gets a vote. This is the same value a human types into the form's
+  // "Ends" box; the event's timezone is applied by the server, which is the
+  // only place that knows it.
+  function endOf(start, minutes) {
+    var at = new Date(start + ':00Z');
+    if (isNaN(at.getTime())) return '';
+    return new Date(at.getTime() + minutes * 60000).toISOString().slice(0, 16);
+  }
+
+  function highlight(cell, on) {
+    cell.style.outline = on ? '2px dashed currentColor' : '';
+  }
+
+  document.addEventListener('dragstart', function (e) {
+    held = closestWith(e.target, 'data-schedule-action');
+    if (!held || !e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', held.getAttribute('data-code'));
+  });
+
+  document.addEventListener('dragend', function () { held = null; });
+
+  document.addEventListener('dragover', function (e) {
+    var cell = held && e.dataTransfer ? closestWith(e.target, 'data-drop') : null;
+    if (!cell) return;
+    e.preventDefault();                     // "yes, you may drop here"
+    e.dataTransfer.dropEffect = 'move';
+    highlight(cell, true);
+  });
+
+  document.addEventListener('dragleave', function (e) {
+    var cell = closestWith(e.target, 'data-drop');
+    if (cell) highlight(cell, false);
+  });
+
+  document.addEventListener('drop', function (e) {
+    var cell = held ? closestWith(e.target, 'data-drop') : null;
+    if (!cell) return;
+    e.preventDefault();
+    highlight(cell, false);
+
+    var ends = endOf(cell.getAttribute('data-start'),
+      Number(held.getAttribute('data-minutes')) || ${DEFAULT_MINUTES});
+    if (!ends) return;
+
+    form.action = held.getAttribute('data-schedule-action');
+    form.elements.room.value = cell.getAttribute('data-room');
+    form.elements.starts_at.value = cell.getAttribute('data-start');
+    form.elements.ends_at.value = ends;
+    form.submit();
+  });
+})();
+`.trim();
+
+/** How long a session runs, in minutes. Anything without times gets the default. */
+function durationMinutes(session) {
+  if (!session.starts_at || !session.ends_at) return DEFAULT_MINUTES;
+  const minutes = Math.round((Date.parse(session.ends_at) - Date.parse(session.starts_at)) / 60_000);
+  return minutes > 0 ? minutes : DEFAULT_MINUTES;
+}
+
+/**
+ * The wall-clock end of a slot, given its wall-clock start and a duration.
+ *
+ * Via instants, so an hour is an hour even across the weekend the clocks change.
+ */
+function endOfSlot(event, startLocal, minutes) {
+  const instant = fromLocalInput(startLocal, event.timezone);
+  if (!instant) return '';
+  return toLocalInput(new Date(Date.parse(instant) + minutes * 60_000).toISOString(), event.timezone);
+}
+
+/**
+ * The days the conference runs, as the organizer typed them.
+ *
+ * Read off the stored dates rather than converted through the timezone.
+ * `candidateSlots` does convert, which for a westward event turns "the 12th" at
+ * midnight UTC into the 11th -- fine for its own purposes, wrong as a heading on
+ * a grid somebody is reading. This is the same reading of the same two columns
+ * that the "Starts" box on the list view already prefills from.
+ */
+function eventDays(event) {
+  const first = (event.starts_at ?? '').slice(0, 10);
+  const last = (event.ends_at ?? '').slice(0, 10);
+  if (!first || !last || last < first) return [];
+
+  const days = [];
+  for (let d = Date.parse(`${first}T00:00:00Z`); d <= Date.parse(`${last}T00:00:00Z`); d += 86_400_000) {
+    days.push(new Date(d).toISOString().slice(0, 10));
+    if (days.length >= 31) break;   // a conference is not a month long
+  }
+  return days;
+}
+
+/**
+ * The grid the schedule is *built* on, as opposed to the one it is read from.
+ *
+ * `agendaGrid` emits the rows that have something in them, which is right for
+ * reading a programme and useless for building one: you cannot put a talk into a
+ * row that only exists once a talk is in it. So an empty scaffold is laid down
+ * first -- every event day, at the same hourly slots `autoSchedule` places into,
+ * so the two agree about what a slot is -- and what is actually scheduled is
+ * painted on top.
+ *
+ * Anything scheduled somewhere the scaffold does not cover, such as a talk at
+ * 09:30 or one placed outside the event's dates, adds its own row rather than
+ * disappearing. A session you cannot see is a session you cannot move.
+ *
+ * Cells are keyed by room id rather than by column position, so this cannot
+ * quietly transpose a day if the two room queries ever disagree.
+ */
+function schedulingGrid(db, event, rooms) {
+  const days = new Map();
+  const rowsFor = (day) => {
+    if (!days.has(day)) days.set(day, new Map());
+    return days.get(day);
+  };
+
+  const times = [...new Set(candidateSlots(db, event.id).map((slot) => slot.time))];
+  for (const day of eventDays(event)) {
+    for (const time of times) rowsFor(day).set(time, new Map());
+  }
+
+  for (const { day, rooms: gridRooms, rows } of agendaGrid(db, event.id, event.timezone)) {
+    for (const row of rows) {
+      const byRoom = rowsFor(day).get(row.time) ?? new Map();
+      row.cells.forEach((cell, i) => { if (cell) byRoom.set(gridRooms[i].id, cell); });
+      rowsFor(day).set(row.time, byRoom);
+    }
+  }
+
+  return [...days.keys()].sort().map((day) => ({
+    day,
+    rows: [...days.get(day).keys()].sort().map((time) => ({
+      time,
+      cells: rooms.map((room) => days.get(day).get(time).get(room.id) ?? null),
+    })),
+  }));
+}
+
+/**
+ * One session, as something you can pick up.
+ *
+ * Everything a drop needs is on the element: which submission, how long it runs,
+ * and the URL its move posts to. The script therefore builds no URLs and knows
+ * no rules. "Move" is the same journey for somebody who is not dragging: it is
+ * an ordinary link into move mode.
+ */
+function sessionTile(event, session, { moving = false, back }) {
+  const minutes = durationMinutes(session);
+  return html`
+    <div class="card" draggable="true"
+         style="margin:0;cursor:grab${moving ? ';outline:2px solid var(--accent)' : ''}"
+         data-code="${session.code}" data-minutes="${minutes}"
+         data-schedule-action="/e/${event.slug}/submissions/${session.code}/schedule">
+      <a href="/e/${event.slug}/submissions/${session.code}">${session.title}</a><br>
+      <span class="muted"><code>${session.code}</code> &middot; ${minutes} min</span><br>
+      ${moving
+        ? html`<a href="${back}">Cancel move</a>`
+        : html`<a href="${back}&amp;move=${session.code}">Move</a>`}
+    </div>`;
+}
+
+/**
+ * A slot with nothing in it.
+ *
+ * The room and the start are on the cell whether or not anybody is dragging,
+ * because that is what the drop handler reads. In move mode the cell also holds
+ * a real form carrying exactly those values, which is the keyboard path and the
+ * no-script path at once -- and, not incidentally, the thing the drop handler is
+ * copying. One placement, described twice, posted to one route.
+ */
+function freeCell(event, room, startLocal, moving, movingMinutes, back) {
+  return html`
+    <td data-drop="1" data-room="${room.slug}" data-start="${startLocal}">
+      ${moving ? html`
+        <form method="post" action="/e/${event.slug}/submissions/${moving.code}/schedule">
+          <input type="hidden" name="room" value="${room.slug}">
+          <input type="hidden" name="starts_at" value="${startLocal}">
+          <input type="hidden" name="ends_at" value="${endOfSlot(event, startLocal, movingMinutes)}">
+          <input type="hidden" name="return_to" value="${back}">
+          <button type="submit" class="secondary"
+                  aria-label="Put ${moving.code} in ${room.name} at ${startLocal.replace('T', ', ')}">
+            Put here</button>
+        </form>` : html`<span class="muted">-</span>`}
+    </td>`;
+}
+
+/**
+ * The grid view: drop targets everywhere something could go.
+ *
+ * A free cell always carries the room and the time it stands for, whether or not
+ * anybody is dragging, because that is what the script reads. In move mode it
+ * also carries a real form with those same values in it, which is what makes the
+ * whole thing work with no script and no mouse.
+ */
+function gridView(ctx, event, rooms, moving, back) {
+  if (rooms.length === 0) {
+    return empty('There are no rooms to schedule into yet. Add one in Settings.');
+  }
+
+  const grid = schedulingGrid(ctx.db, event, rooms);
+  if (grid.length === 0) {
+    return empty('This event has no dates, so there is no grid yet. Set them in Settings.');
+  }
+
+  const movingMinutes = moving ? durationMinutes(moving) : 0;
+
+  return html`
+    ${moving ? html`
+      <ul class="alerts"><li class="warn">
+        Moving <code>${moving.code}</code> ${moving.title} (${movingMinutes} minutes).
+        Choose a free slot below, or <a href="${back}">cancel</a>.
+        A slot that clashes is refused when you choose it.
+      </li></ul>` : html`
+      <p class="sub">Drag a session into a free slot. Or use <strong>Move</strong>, which
+        puts a <strong>Put here</strong> button in every free slot &mdash; the same
+        placement, no mouse required. Either way the server refuses a clash.</p>`}
+
+    ${grid.map(({ day, rows }) => html`
+      <h3>${day}</h3>
+      <div class="scroll">
+      <table>
+        <thead><tr><th>Time</th>${rooms.map((r) => html`<th>${r.name}</th>`)}</tr></thead>
+        <tbody>
+          ${rows.map((row) => html`
+            <tr>
+              <th scope="row">${row.time}</th>
+              ${row.cells.map((cell, i) => (cell
+                ? html`<td>${sessionTile(event, cell, { moving: moving?.id === cell.id, back })}</td>`
+                : freeCell(event, rooms[i], `${day}T${row.time}`, moving, movingMinutes, back)))}
+            </tr>`)}
+        </tbody>
+      </table>
+      </div>`)}`;
+}
 
 function agenda(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
@@ -564,6 +842,13 @@ function agenda(ctx) {
   if (!views.includes(view)) {
     throw badRequest(`unknown view '${view}'`, `use one of: ${views.join(', ')}`);
   }
+
+  // Move mode: the session that has been picked up and is waiting to be put
+  // down. It is a query parameter rather than any kind of state, so it survives
+  // a reload, is linkable, and needs nothing to have been remembered.
+  const gridBack = `/e/${event.slug}/agenda?view=week`;
+  const moveCode = ctx.query.get('move');
+  const moving = moveCode ? findSubmission(ctx.db, event.id, moveCode) : null;
 
   let content;
   if (view === 'conflicts') {
@@ -602,26 +887,7 @@ function agenda(ctx) {
           </tbody>
         </table>`)}`;
   } else if (view === 'week') {
-    const grid = agendaGrid(ctx.db, event.id, event.timezone);
-    content = grid.length === 0 ? empty('Nothing is scheduled yet.') : html`
-      ${grid.map(({ day, rooms: gridRooms, rows }) => html`
-        <h3>${day}</h3>
-        <div class="scroll">
-        <table>
-          <thead><tr><th>Time</th>${gridRooms.map((r) => html`<th>${r.name}</th>`)}</tr></thead>
-          <tbody>
-            ${rows.map((row) => html`
-              <tr>
-                <td><strong>${row.time}</strong></td>
-                ${row.cells.map((cell) => html`
-                  <td>${cell
-                    ? html`<a href="/e/${event.slug}/submissions/${cell.code}">${cell.title}</a>
-                           <br><span class="muted">${cell.code}</span>`
-                    : html`<span class="muted">-</span>`}</td>`)}
-              </tr>`)}
-          </tbody>
-        </table>
-        </div>`)}`;
+    content = gridView(ctx, event, allRooms, moving, gridBack);
   } else if (view === 'track') {
     const byTrack = agendaByTrack(ctx.db, event.id);
     content = html`${byTrack.map(({ track, sessions: trackSessions }) => html`
@@ -683,6 +949,7 @@ function agenda(ctx) {
     title: `Agenda - ${event.name}`,
     nav: organizerNav(event, 'Agenda'),
     wide: true,
+    script: view === 'week' ? AGENDA_DRAG_SCRIPT : null,
     body: html`
       <h1>Agenda</h1>
       <p class="sub">${sessions.length} scheduled, ${unscheduled.length} still without a slot.</p>
@@ -700,6 +967,28 @@ function agenda(ctx) {
           <a href="/e/${event.slug}/agenda?view=conflicts">show them</a></li></ul>` : ''}
 
       ${content}
+
+      ${view === 'week' && unscheduled.length > 0 ? html`
+        <h2>Not in the grid yet</h2>
+        <p class="sub">${unscheduled.length} session${unscheduled.length === 1 ? '' : 's'} with
+          nowhere to be. Drag one into a free slot above, or choose Move and pick the slot.
+          A session with no times yet is assumed to want ${DEFAULT_MINUTES} minutes.</p>
+        <div class="cards">
+          ${unscheduled.map((s) => sessionTile(event, s,
+            { moving: moving?.id === s.id, back: gridBack }))}
+        </div>` : ''}
+
+      ${view === 'week' ? html`
+        <!-- What a drop posts. It carries no action of its own: the script copies
+             one off the session being dropped, so the URL is the server's and the
+             browser only chooses between URLs the server already wrote down. With
+             scripting off this is an empty hidden form that nothing submits. -->
+        <form method="post" id="drop-form" hidden>
+          <input type="hidden" name="room">
+          <input type="hidden" name="starts_at">
+          <input type="hidden" name="ends_at">
+          <input type="hidden" name="return_to" value="${gridBack}">
+        </form>` : ''}
 
       ${view === 'list' ? html`
         <h2>Publish</h2>
@@ -762,6 +1051,33 @@ function agenda(ctx) {
   }));
 }
 
+/**
+ * Whether the caller wants the answer rather than the page.
+ *
+ * The three agenda writes all compute a real result -- what moved, what could
+ * not be placed, what was held back -- and used to spend it on a sentence in a
+ * query string. A browser still gets the sentence and the redirect; anything
+ * that said `accept: application/json` gets the result. Same handler, same
+ * checks, same writes: the only difference is how the answer is phrased. This is
+ * the precedent `src/server.js` already sets for errors.
+ */
+function wantsJson(ctx) {
+  return (ctx.headers?.accept ?? '').includes('application/json');
+}
+
+/**
+ * Where a form asked to be sent back to, if it is somewhere in this event.
+ *
+ * The grid posts a `return_to` so that placing a session leaves you looking at
+ * the grid rather than at the session. Anything outside this event's own pages
+ * is ignored rather than followed, because a redirect target taken from a form
+ * field is an open redirect if it is allowed to point anywhere.
+ */
+function returnTo(ctx, event) {
+  const back = ctx.fields.get('return_to');
+  return back.startsWith(`/e/${event.slug}/`) ? back : null;
+}
+
 function postAutoSchedule(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   requireOrganizer(ctx, event);
@@ -771,6 +1087,8 @@ function postAutoSchedule(ctx) {
   });
 
   const remaining = unscheduledSessions(ctx.db, event.id).length;
+  if (wantsJson(ctx)) return json({ placed, remaining });
+
   const note = placed.length === 0
     ? 'Nothing could be placed automatically. Add rooms, or move something by hand.'
     : `Placed ${placed.length} session(s). ${remaining > 0 ? `${remaining} still need a slot. ` : ''}`
@@ -811,9 +1129,17 @@ function postPublish(ctx) {
         AND starts_at IS NOT NULL AND room_id IS NOT NULL`,
   ).run(now(), event.id);
 
+  // `sum()` over no rows is null, which is not a count anybody can add up.
+  const unapproved = Number(heldBack.unapproved ?? 0);
+  const unscheduled = Number(heldBack.unscheduled ?? 0);
+
+  if (wantsJson(ctx)) {
+    return json({ published: ready, held_back: { unapproved, unscheduled } });
+  }
+
   const parts = [`Published ${ready} session(s).`];
-  if (heldBack.unapproved > 0) parts.push(`${heldBack.unapproved} held back: content not approved.`);
-  if (heldBack.unscheduled > 0) parts.push(`${heldBack.unscheduled} held back: no time slot.`);
+  if (unapproved > 0) parts.push(`${unapproved} held back: content not approved.`);
+  if (unscheduled > 0) parts.push(`${unscheduled} held back: no time slot.`);
 
   return redirect(`/e/${event.slug}/agenda?view=list&done=${encodeURIComponent(parts.join(' '))}`);
 }
@@ -860,6 +1186,35 @@ function postSchedule(ctx) {
   if (clashes.length > 0) {
     throw badRequest(`that slot clashes: ${clashes.map((p) => p.detail).join('; ')}`,
       'pick a different room or time, or move the other session first');
+  }
+
+  if (wantsJson(ctx)) {
+    // Read back rather than echo: `published` is left alone when the caller did
+    // not mention it, so the only honest answer is the one in the row.
+    const after = ctx.db.prepare('SELECT starts_at, ends_at, published FROM submission WHERE id = ?')
+      .get(submission.id);
+    return json({
+      code: submission.code,
+      room: room?.slug ?? null,
+      starts_at: after.starts_at,
+      ends_at: after.ends_at,
+      published: Boolean(after.published),
+      invited: invited ? invited.messages : 0,
+    });
+  }
+
+  // The grid asks to be sent back to itself, because placing one session is
+  // rarely the whole job; the submission page is the right answer for the form
+  // that lives on it.
+  const back = returnTo(ctx, event);
+  if (back) {
+    const where = room ? room.name : 'no room';
+    const at = startsAt
+      ? `${dateOnly(startsAt, event.timezone)} ${localTime(startsAt, event.timezone)}`
+      : 'no time';
+    const note = `${submission.code} is now in ${where}, ${at}.`
+      + (invited ? ` ${invited.messages} calendar invite(s) revised.` : '');
+    return redirect(`${back}${back.includes('?') ? '&' : '?'}done=${encodeURIComponent(note)}`);
   }
 
   return redirect(`/e/${event.slug}/submissions/${submission.code}`

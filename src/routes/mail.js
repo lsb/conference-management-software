@@ -15,10 +15,13 @@ import { findEvent, requireOrganizer, organizerNav, empty, fullName } from './sh
 
 export function mountMail(router) {
   router.get('/e/:event/mail', composer,
-    'Compose a bulk message. ?audience=<key> previews exactly who would receive it.');
+    'Compose a bulk message. ?audience=<key> previews exactly who would receive it. '
+    + 'The audience keys, and the same preview as JSON, are at /api/events/<event>/audiences.');
 
   router.post('/e/:event/mail', send,
-    'Queue a bulk message to an audience. Add preview=1 to see recipients without sending.');
+    'Queue a bulk message to an audience. Body: audience, subject, body. '
+    + 'This is what to use for a deadline change or a paperwork nag; notify announces decisions. '
+    + 'Add preview=1 to render the first message without sending anything.');
 }
 
 function templatesFor(db, eventId) {
@@ -161,7 +164,7 @@ function send(ctx) {
 
   const subject = ctx.fields.require('subject');
   const body = ctx.fields.require('body');
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
 
   const varsFor = (person) => ({
     event_name: event.name,

@@ -5,8 +5,11 @@
 // stale copy-paste from a spreadsheet — which is exactly the failure this
 // product exists to remove.
 //
-// Every audience is also previewable before sending. Nobody should ever press
-// send on a list they have not seen.
+// Every audience is also previewable before sending, over both surfaces:
+// `conf mail <event> --audience <key> --dry-run`, and
+// `GET /api/events/<event>/audiences?audience=<key>`. Nobody should ever press
+// send on a list they have not seen -- including a caller that is a program,
+// which is why the preview is not only a rendered HTML table.
 
 /**
  * The audiences an organizer can pick, in the order they appear in the UI.

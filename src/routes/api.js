@@ -1,18 +1,29 @@
 // The JSON API.
 //
-// Every organizer page has a twin here. Two rules make it usable by something
-// that has never seen it before:
+// The target is that somebody with no source access and no shell can run a
+// conference from here: decide, tell the speakers, schedule, chase paperwork,
+// email a group, hand the website team a feed. Three rules make it usable by
+// something that has never seen it before:
 //
 //   1. Records are addressed by slug and session code, never by integer id.
-//      Integer ids are not in the responses at all, so there is nothing to
-//      accidentally quote back at us.
+//      The single exception is an outbox message, which has no other name; see
+//      `listOutbox`.
 //   2. Errors say what to do next. See `HttpError`.
+//   3. Anything you need before you can make the next call travels with the
+//      call you already made -- room slugs on the event, task slugs on the task
+//      list, message ids on the outbox. Discovering an identifier by
+//      deliberately failing a request is not discovery.
+//
+// Read routes here are organizer-gated, including the ones that look like a
+// programme. The public, cross-origin feed is an embed: /embed/<event>/<slug>.
 
-import { json, badRequest } from '../http/router.js';
+import { json, badRequest, notFound, forbidden } from '../http/router.js';
 import { decide, notify, awaitingNotification, participantsOf } from '../core/submissions.js';
 import { outstandingTasks, runReminders, taskDefinitions } from '../core/tasks.js';
 import { findConflicts, scheduledSessions, unscheduledSessions } from '../core/schedule.js';
-import { createMagicLink } from '../core/auth.js';
+import { createMagicLink, canOrganize } from '../core/auth.js';
+import { audienceSizes, resolveAudience, UnknownAudienceError } from '../core/audience.js';
+import { searchPeople, personHistory, notesOn, tagsOn } from '../core/crm.js';
 import { findEvent, findSubmission, requireOrganizer, statusCounts, STATUS_TABS, fullName } from './shared.js';
 
 export function mountApi(router) {
@@ -20,7 +31,8 @@ export function mountApi(router) {
     'Every event, newest first.');
 
   router.get('/api/events/:event', getEvent,
-    'One event, with submission counts by status.');
+    'One event, with submission counts by status, and its room and track slugs -- '
+    + 'which is where to get the room you have to name before you can schedule anything.');
 
   router.get('/api/events/:event/submissions', listSubmissions,
     'Submissions. ?status=pending|accept_queue|decline_queue|accepted|declined|withdrawn|draft, ?q=text, ?track=slug.');
@@ -60,10 +72,59 @@ export function mountApi(router) {
     'Queue reminder emails. Body: {"dry_run":true} to preview without sending.');
 
   router.get('/api/events/:event/outbox', listOutbox,
-    'Messages generated for this event, newest first.');
+    'Messages generated for this event, newest first. Envelopes only: no bodies here. '
+    + 'What a message actually said is at /api/events/<event>/outbox/<id>, using the id in each row.');
+
+  router.get('/api/events/:event/outbox/:id', getOutboxMessage,
+    'One message in full, including the body. Ids come from the outbox list.');
+
+  router.get('/api/events/:event/audiences', listAudiences,
+    'The named groups POST /e/<event>/mail can send to, with their sizes. '
+    + '?audience=<key> lists exactly who is in one, which is the dry run to do before sending; '
+    + '&task=<slug> narrows outstanding-tasks to people owing one particular thing.');
+
+  router.post('/api/events/:event/portal-links', createPortalLink,
+    'Body: {"person":"yusuf-karim"}. Mints a one-time sign-in link for that speaker\'s portal. '
+    + 'Anyone holding the URL is signed in as them, so it goes to them and nowhere else.');
+
+  router.get('/api/events/:event/embeds', listEmbeds,
+    'The public feeds that exist, with their URLs. Read-only: create one with '
+    + 'POST /e/<event>/embeds (name, feed, format). An embed records its own format, so a JSON '
+    + 'feed is one made with format=json -- adding .json to an HTML embed\'s URL converts nothing.');
+
+  router.get('/api/events/:event/files', listFiles,
+    'What speakers have uploaded. ?task=<slug> for one kind. Download one at /files/<slug>, '
+    + 'or all of them at /e/<event>/files.zip.');
+
+  router.get('/api/events/:event/reviews', listReviews,
+    'Per reviewer per round: submitted, still outstanding, declined. Sorted by who is furthest behind.');
+
+  router.get('/api/people', listPeople,
+    'The speaker database, across every event, not one. ?q=, ?tag=, ?company=, '
+    + '?event=<slug> for people who have spoken at one, ?never_spoken=1 for people we know '
+    + 'and have never put on stage.');
+
+  router.get('/api/people/:slug', getPerson,
+    'One human everywhere they appear: every event, every submission, their tags and notes. '
+    + 'This is how to answer "have we had this speaker before" in one request.');
 }
 
 // --- shaping ---------------------------------------------------------------
+
+/** Where this instance thinks it is, for URLs a caller is meant to hand to somebody. */
+const baseUrl = (ctx) => ctx.origin;
+
+/**
+ * The speaker database spans events, so there is no single event to check
+ * membership against. Anybody who can organize anything may read it, which is
+ * the same trust boundary `/crm` already draws around the same rows.
+ */
+function requireAnyOrganizer(ctx) {
+  const events = ctx.db.prepare('SELECT id FROM event').all();
+  if (events.some((e) => canOrganize(ctx.db, e.id, ctx.person))) return;
+  throw forbidden('organizer access required',
+    'sign in at /login, or at /portal/sign-in with an organizer account');
+}
 
 const eventShape = (e) => ({
   slug: e.slug,
@@ -118,11 +179,25 @@ function getEvent(ctx) {
   // Counts by status say how many proposals were declined, and how many
   // decisions are sitting unannounced. Neither is public.
   requireOrganizer(ctx, event);
+
+  // Rooms and tracks ride along rather than living at their own route. You need
+  // a room slug before you can schedule anything, and this is the call you have
+  // already made; a separate endpoint would be one more thing to find first.
+  // There are a handful of each, so nothing is being paid for by carrying them.
+  const rooms = ctx.db.prepare(
+    'SELECT slug, name, capacity FROM room WHERE event_id = ? ORDER BY sort_order, name',
+  ).all(event.id);
+  const tracks = ctx.db.prepare(
+    'SELECT slug, name FROM track WHERE event_id = ? ORDER BY sort_order, name',
+  ).all(event.id);
+
   return json({
     ...eventShape(event),
     submissions: statusCounts(ctx.db, event.id),
     conflicts: findConflicts(ctx.db, event.id).length,
     outstanding_tasks: outstandingTasks(ctx.db, event.id).length,
+    rooms: rooms.map((r) => ({ slug: r.slug, name: r.name, capacity: r.capacity ?? null })),
+    tracks: tracks.map((t) => ({ slug: t.slug, name: t.name })),
   });
 }
 
@@ -268,7 +343,7 @@ function notifyMany(ctx) {
   }
 
   const ids = codes.map((code) => findSubmission(ctx.db, event.id, code).id);
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = baseUrl(ctx);
 
   const report = notify(ctx.db, ids, {
     actorPersonId: ctx.person?.id ?? null,
@@ -389,7 +464,7 @@ function postReminders(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   requireOrganizer(ctx, event);
   const dryRun = ctx.fields.bool('dry_run');
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = baseUrl(ctx);
 
   const queued = runReminders(ctx.db, event.id, {
     dryRun,
@@ -413,7 +488,12 @@ function listOutbox(ctx) {
   return json({
     event: event.slug,
     count: rows.length,
+    // The one integer id in this whole API, and it is here on purpose. Outbox
+    // rows have no slug and no code -- an email is not a record anybody names --
+    // so without the id there is no way to ask for one of them, which is how
+    // "the bodies are not stored anywhere" became a thing people concluded.
     messages: rows.map((m) => ({
+      id: m.id,
       to: m.to_email,
       subject: m.subject,
       kind: m.kind,
@@ -421,5 +501,293 @@ function listOutbox(ctx) {
       created_at: m.created_at,
       delivered: Boolean(m.sent_at),
     })),
+    note: `Bodies are not in this list. GET /api/events/${event.slug}/outbox/<id> for one in full.`,
+  });
+}
+
+function getOutboxMessage(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  // Decision letters and portal sign-in links are in these bodies.
+  requireOrganizer(ctx, event);
+
+  const message = ctx.db.prepare(
+    `SELECT o.*, s.code AS submission_code FROM outbox o
+       LEFT JOIN submission s ON s.id = o.submission_id
+      WHERE o.id = ? AND o.event_id = ?`,
+  ).get(Number(ctx.params.id), event.id);
+
+  if (!message) {
+    throw notFound(`no message ${ctx.params.id} in this event`,
+      `ids come from GET /api/events/${event.slug}/outbox`);
+  }
+
+  return json({
+    id: message.id,
+    to: message.to_email,
+    subject: message.subject,
+    body: message.body,
+    kind: message.kind,
+    submission: message.submission_code ?? null,
+    created_at: message.created_at,
+    delivered: Boolean(message.sent_at),
+    // A decision email carries the calendar invite on the same row, and "what
+    // did we actually send them" includes it.
+    ...(message.ics_body ? { calendar: message.ics_body } : {}),
+  });
+}
+
+function listAudiences(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  // Who is in 'declined-submitters' is a decision list by another name.
+  requireOrganizer(ctx, event);
+
+  const key = ctx.query.get('audience');
+  const taskSlug = ctx.query.get('task') || null;
+
+  if (!key) {
+    const audiences = audienceSizes(ctx.db, event.id);
+    return json({
+      event: event.slug,
+      count: audiences.length,
+      audiences,
+      note: 'Add ?audience=<key> to see exactly who is in one before sending to it. '
+        + `Sending is POST /e/${event.slug}/mail with audience, subject, body.`,
+    });
+  }
+
+  let recipients;
+  try {
+    recipients = resolveAudience(ctx.db, event.id, key, { taskSlug });
+  } catch (err) {
+    if (err instanceof UnknownAudienceError) throw badRequest(err.message, err.hint);
+    throw err;
+  }
+
+  return json({
+    event: event.slug,
+    audience: key,
+    task: taskSlug,
+    count: recipients.length,
+    recipients: recipients.map((p) => ({ slug: p.slug, name: fullName(p), email: p.email })),
+    note: 'Nothing has been sent. This is the list POST /e/<event>/mail would use.',
+  });
+}
+
+/**
+ * Hand somebody their way in.
+ *
+ * The web UI never shows a live token -- it emails one -- so before this route
+ * existed the only way to get a speaker signed in over HTTP was to send them a
+ * message and then read the token back out of the outbox. `conf portal-link`
+ * has done this in one step all along.
+ */
+function createPortalLink(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  // This mints a live credential for somebody else. Nothing about it is public.
+  requireOrganizer(ctx, event);
+
+  const slug = ctx.fields.require('person',
+    `body: {"person":"ada-lovelace"}. Slugs are at /api/events/${event.slug}/speakers`);
+  const person = ctx.db.prepare('SELECT * FROM person WHERE slug = ?').get(slug);
+  if (!person) {
+    throw badRequest(`no person with slug '${slug}'`,
+      `list them at /api/events/${event.slug}/speakers, or /api/people across every event`);
+  }
+
+  const token = createMagicLink(ctx.db, person.id, event.id);
+  // createMagicLink hands back the token and keeps only its hash, so the expiry
+  // has to be read from the row it just wrote. Whoever passes this link on needs
+  // to know how long it is good for; an hour surprises people.
+  const link = ctx.db.prepare(
+    'SELECT expires_at FROM magic_link WHERE person_id = ? ORDER BY id DESC LIMIT 1',
+  ).get(person.id);
+
+  return json({
+    person: person.slug,
+    url: `${baseUrl(ctx)}/portal/${event.slug}/enter?token=${token}`,
+    expires_at: link.expires_at,
+    note: 'One use, then it is spent. Anyone holding this URL is signed in as this person, '
+      + 'so send it to them and to nobody else.',
+  });
+}
+
+function listEmbeds(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  const rows = ctx.db.prepare(
+    `SELECT e.*, t.slug AS track_slug FROM embed e
+       LEFT JOIN track t ON t.id = e.filter_track_id
+      WHERE e.event_id = ? ORDER BY e.created_at`,
+  ).all(event.id);
+
+  return json({
+    event: event.slug,
+    count: rows.length,
+    embeds: rows.map((e) => ({
+      slug: e.slug,
+      name: e.name,
+      feed: e.feed,
+      format: e.format,
+      track: e.track_slug ?? null,
+      enabled: Boolean(e.enabled),
+      url: `${baseUrl(ctx)}/embed/${event.slug}/${e.slug}${e.format === 'html' ? '' : `.${e.format}`}`,
+    })),
+    note: 'Read-only. Listing the embeds that exist is not the same as making the one you '
+      + `were asked for: POST /e/${event.slug}/embeds with name, feed, format.`,
+  });
+}
+
+function listFiles(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  const definitions = taskDefinitions(ctx.db, event.id);
+  const taskSlug = ctx.query.get('task');
+  if (taskSlug && !definitions.some((d) => d.slug === taskSlug)) {
+    throw badRequest(`no task called '${taskSlug}' at this event`,
+      definitions.length ? `tasks are: ${definitions.map((d) => d.slug).join(', ')}`
+        : 'this event has no tasks');
+  }
+
+  // The same query `conf files` runs, superseded uploads excluded, so the two
+  // surfaces cannot disagree about which version of a deck is the current one.
+  const rows = ctx.db.prepare(
+    `SELECT f.slug, f.filename, f.content_type, f.byte_size, f.created_at,
+            p.slug AS person_slug, p.first_name, p.last_name,
+            td.slug AS task, s.code AS submission
+       FROM file f
+       LEFT JOIN person p ON p.id = f.uploaded_by_person_id
+       LEFT JOIN task_instance ti ON ti.file_id = f.id
+       LEFT JOIN task_definition td ON td.id = ti.definition_id
+       LEFT JOIN submission s ON s.id = ti.submission_id
+      WHERE f.event_id = ? AND f.superseded_at IS NULL
+        AND (? IS NULL OR td.slug = ?)
+      ORDER BY p.last_name, f.created_at`,
+  ).all(event.id, taskSlug ?? null, taskSlug ?? null);
+
+  return json({
+    event: event.slug,
+    count: rows.length,
+    available_tasks: definitions.map((d) => d.slug),
+    files: rows.map((f) => ({
+      slug: f.slug,
+      filename: f.filename,
+      content_type: f.content_type,
+      bytes: f.byte_size,
+      from: f.person_slug ?? null,
+      from_name: f.person_slug ? `${f.first_name ?? ''} ${f.last_name ?? ''}`.trim() : null,
+      task: f.task ?? null,
+      submission: f.submission ?? null,
+      created_at: f.created_at,
+      url: `${baseUrl(ctx)}/files/${f.slug}`,
+    })),
+    note: `All of them in one archive: GET /e/${event.slug}/files.zip`,
+  });
+}
+
+function listReviews(ctx) {
+  const event = findEvent(ctx.db, ctx.params.event);
+  requireOrganizer(ctx, event);
+
+  // `conf reviews`, unchanged: who is behind is the only reason to look.
+  const rows = ctx.db.prepare(
+    `SELECT p.slug AS reviewer_slug, p.first_name, p.last_name, p.email,
+            ep.name AS round,
+            sum(rv.status = 'submitted') AS submitted,
+            sum(rv.status IN ('assigned', 'in_progress')) AS outstanding,
+            sum(rv.status = 'declined') AS declined
+       FROM review rv
+       JOIN person p ON p.id = rv.reviewer_person_id
+       JOIN evaluation_plan ep ON ep.id = rv.plan_id
+      WHERE ep.event_id = ?
+      GROUP BY p.id, ep.id
+      ORDER BY outstanding DESC, p.last_name`,
+  ).all(event.id);
+
+  return json({
+    event: event.slug,
+    count: rows.length,
+    reviewers: rows.map((r) => ({
+      reviewer: r.reviewer_slug,
+      name: fullName(r),
+      email: r.email,
+      round: r.round,
+      submitted: r.submitted,
+      outstanding: r.outstanding,
+      declined: r.declined,
+    })),
+  });
+}
+
+function listPeople(ctx) {
+  requireAnyOrganizer(ctx);
+
+  const eventSlug = ctx.query.get('event');
+  let spokeAtEventId = null;
+  if (eventSlug) {
+    const found = ctx.db.prepare('SELECT id FROM event WHERE slug = ?').get(eventSlug);
+    if (!found) {
+      const known = ctx.db.prepare('SELECT slug FROM event ORDER BY starts_at DESC').all()
+        .map((e) => e.slug);
+      throw badRequest(`no event with slug '${eventSlug}'`,
+        known.length ? `known events: ${known.join(', ')}` : 'no events exist yet');
+    }
+    spokeAtEventId = found.id;
+  }
+
+  const rows = searchPeople(ctx.db, {
+    query: ctx.query.get('q') ?? '',
+    tag: ctx.query.get('tag') ?? '',
+    company: ctx.query.get('company') ?? '',
+    spokeAtEventId,
+    neverSpoken: ['1', 'true', 'yes', 'on'].includes((ctx.query.get('never_spoken') ?? '').toLowerCase()),
+  });
+
+  return json({
+    count: rows.length,
+    people: rows.map((p) => ({
+      slug: p.slug,
+      name: fullName(p),
+      email: p.email,
+      job_title: p.job_title || null,
+      company: p.company || null,
+      events_spoken: p.events_spoken,
+      submissions: p.submissions,
+      tags: (p.tags ?? '').split(', ').filter(Boolean),
+    })),
+    note: 'Across every event on this instance, not one. One person in full: /api/people/<slug>.',
+  });
+}
+
+function getPerson(ctx) {
+  requireAnyOrganizer(ctx);
+
+  const person = ctx.db.prepare('SELECT * FROM person WHERE slug = ?').get(ctx.params.slug);
+  if (!person) {
+    throw notFound(`no person with slug '${ctx.params.slug}'`,
+      'search for them at /api/people?q=<name>');
+  }
+
+  const history = personHistory(ctx.db, person.id);
+
+  return json({
+    person: person.slug,
+    name: fullName(person),
+    email: person.email,
+    job_title: person.job_title || null,
+    company: person.company || null,
+    tags: tagsOn(ctx.db, person.id),
+    // "Spoke at" is not "submitted to". Counting submissions as appearances is
+    // how somebody who was declined three times becomes a returning speaker.
+    events_spoken: new Set(history.filter((h) => h.status === 'accepted').map((h) => h.event_slug)).size,
+    history: history.map((h) => ({
+      event: h.event_slug,
+      code: h.code,
+      title: h.title,
+      status: h.status,
+      role: h.role,
+    })),
+    notes: notesOn(ctx.db, person.id).map((n) => ({ created_at: n.created_at, body: n.body })),
   });
 }

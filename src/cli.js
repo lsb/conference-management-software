@@ -8,7 +8,12 @@
 
 import { openDatabase, DEFAULT_DB_PATH, now, uniqueSlug } from './db.js';
 import { decide, notify, awaitingNotification, participantsOf } from './core/submissions.js';
-import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
+import {
+  outstandingTasks, runReminders, taskDefinitions, taskDefinitionsWithProgress,
+  findTaskDefinition, createTaskDefinition, assignToAlreadyAccepted,
+  retireTaskDefinition, taskDefinitionUsage,
+  APPLIES_TO, REQUIREMENTS, ASSIGN_WHEN,
+} from './core/tasks.js';
 import {
   findConflicts, scheduledSessions, unscheduledSessions, placeSession,
   autoSchedule, localTime, localDay,
@@ -57,6 +62,14 @@ Usage:
 
   conf tasks <event> [--task SLUG]       outstanding speaker tasks
                      [--person SLUG]     e.g. --task headshot to see who owes one
+             --definitions               what speakers are ASKED for, and by when
+             --define "Title"            start asking for a new thing
+               [--applies-to person|submission] [--requirement acknowledge|form|file]
+               [--due YYYY-MM-DD] [--assign-when on_accept|manual] [--optional]
+               [--instructions "..."] [--form SLUG]
+             --assign SLUG               give one task to everybody already accepted
+             --retire SLUG               stop asking; keep what people already did
+             --delete SLUG               remove it entirely (refused once anyone has done it)
   conf remind <event> [--dry-run]        chase overdue tasks
 
   conf audiences <event>                 named groups a message can go to
@@ -129,7 +142,8 @@ const COMMAND_FLAGS = {
   conflicts: [],
   speakers: [],
   reviews: [],
-  tasks: ['task', 'person'],
+  tasks: ['task', 'person', 'definitions', 'define', 'applies-to', 'requirement',
+    'due', 'assign-when', 'optional', 'instructions', 'form', 'assign', 'retire', 'delete'],
   remind: ['dry-run'],
   mail: ['audience', 'task', 'subject', 'body', 'dry-run'],
   audiences: [],
@@ -206,6 +220,7 @@ const COMMANDS = {
       unscheduled: unscheduledSessions(db, event.id).length,
       conflicts: conflicts.filter((c) => c.severity === 'error').length,
       outstanding_tasks: outstandingTasks(db, event.id).length,
+      task_definitions: taskDefinitions(db, event.id).filter((t) => !t.retired_at).length,
     };
 
     if (args.json) return output(args, summary);
@@ -219,8 +234,15 @@ const COMMANDS = {
       + (summary.unscheduled > 0 ? `  ->  conf autoschedule ${event.slug}` : ''));
     console.log(`  ${summary.conflicts} scheduling conflicts`
       + (summary.conflicts > 0 ? `  ->  conf conflicts ${event.slug}` : ''));
+    // A zero here means one of two very different things, and the difference
+    // matters: everybody is up to date, or nobody was ever asked for anything.
+    // The second reads as "all done" and is how an event reaches its speakers
+    // having never requested a bio, a headshot or a set of slides.
     console.log(`  ${summary.outstanding_tasks} outstanding speaker tasks`
-      + (summary.outstanding_tasks > 0 ? `  ->  conf tasks ${event.slug}` : ''));
+      + (summary.outstanding_tasks > 0 ? `  ->  conf tasks ${event.slug}`
+        : summary.task_definitions === 0
+          ? `  (nothing is being asked of speakers)  ->  conf tasks ${event.slug} --definitions`
+          : ''));
     return 0;
   },
 
@@ -851,8 +873,24 @@ const COMMANDS = {
     return 0;
   },
 
+  /**
+   * Who owes what -- and what is being asked for in the first place.
+   *
+   * The second half is not a separate verb on purpose. "Who owes a headshot"
+   * and "start asking for a headshot" are the same job ten seconds apart, and
+   * every time this repo has put the second half on a screen and left it off
+   * the command line, the eval has found it: five features shipped that way
+   * between Run 4 and Run 7, and the pattern is the single best predictor of a
+   * failed task in the suite. See USABILITY-LOG.md findings 5 and 7.
+   */
   tasks(db, args) {
     const event = requireEvent(db, args._[1]);
+
+    if (args.define !== undefined) return defineTask(db, event, args);
+    if (args.assign !== undefined) return assignTask(db, event, args);
+    if (args.retire !== undefined) return retireTask(db, event, args);
+    if (args.delete !== undefined) return deleteTask(db, event, args);
+    if (args.definitions) return listTaskDefinitions(db, event, args);
 
     let personId = null;
     if (args.person) {
@@ -863,6 +901,9 @@ const COMMANDS = {
     }
 
     const definitions = taskDefinitions(db, event.id);
+    // Retired tasks stay filterable -- what people uploaded for one is still in
+    // Files -- but nobody owes them, so they are not offered as a filter.
+    const live = definitions.filter((d) => !d.retired_at);
     const taskSlug = args.task ?? null;
     if (taskSlug && !definitions.some((d) => d.slug === taskSlug)) {
       throw withHint(new Error(`no task called '${taskSlug}' at this event`),
@@ -877,14 +918,24 @@ const COMMANDS = {
       due: t.due_at?.slice(0, 10) ?? '-',
     }));
 
-    output(args, rows, 'Everybody is up to date.');
+    output(args, rows, live.length === 0
+      ? 'Nothing is being asked of speakers yet, so nobody owes anything.'
+      : 'Everybody is up to date.');
+
+    if (args.json) return 0;
 
     // Without this, "who owes a headshot" means eyeballing a mixed list and
     // hoping you did not miss a row. Naming the filter is what makes the
     // question answerable in one command.
-    if (!args.json && !taskSlug && definitions.length > 1 && rows.length > 0) {
-      console.log(`\nFilter to one task with --task <slug>: ${definitions.map((d) => d.slug).join(', ')}`);
+    if (!taskSlug && live.length > 1 && rows.length > 0) {
+      console.log(`\nFilter to one task with --task <slug>: ${live.map((d) => d.slug).join(', ')}`);
     }
+
+    // Printed whether or not the list is empty. `conf embeds` taught the create
+    // syntax only when there was nothing to show, so the one hint that mattered
+    // sat behind the one condition that never held -- Run 8, and the reason
+    // that eval task went 0/3. See USABILITY-LOG.md.
+    teachDefine(event);
     return 0;
   },
 
@@ -943,6 +994,183 @@ const COMMANDS = {
     return 0;
   },
 };
+
+// --- task definitions ------------------------------------------------------
+//
+// The write half of `conf tasks`. Everything here calls the same core functions
+// the web screen calls, so the two cannot disagree about who a new task lands
+// on or what deleting one destroys.
+
+/** The create line, with the vocabulary, printed wherever tasks are listed. */
+function teachDefine(event) {
+  console.log(`\nWhat is being asked for:  conf tasks ${event.slug} --definitions`);
+  console.log(`Ask for something new:    conf tasks ${event.slug} --define "Upload your slides" `
+    + '--applies-to submission --requirement file --due 2027-04-30');
+  console.log(`  --applies-to   ${APPLIES_TO.map((a) => `${a.value} (${a.short})`).join(', ')}`);
+  console.log(`  --requirement  ${REQUIREMENTS.map((r) => r.value).join(', ')}`);
+}
+
+/** A flag that must be one of a known set, refused with what each one means. */
+function oneOf(value, options, flag, fallback) {
+  if (value === undefined) return fallback;
+  const wanted = String(value);
+  if (options.some((o) => o.value === wanted)) return wanted;
+  throw withHint(new Error(`'${wanted}' is not a value for --${flag}`),
+    `use ${options.map((o) => `--${flag} ${o.value} (${o.short ?? o.label.toLowerCase()})`).join(', or ')}`);
+}
+
+function requireDefinition(db, event, slug, flag) {
+  if (typeof slug !== 'string') {
+    throw withHint(new Error(`--${flag} needs the slug of a task`),
+      `see them with: conf tasks ${event.slug} --definitions`);
+  }
+  const definition = findTaskDefinition(db, event.id, slug);
+  if (definition) return definition;
+
+  const known = taskDefinitions(db, event.id).map((d) => d.slug);
+  throw withHint(new Error(`no task called '${slug}' at this event`),
+    known.length ? `tasks are: ${known.join(', ')}` : 'this event has no tasks yet');
+}
+
+function listTaskDefinitions(db, event, args) {
+  const rows = taskDefinitionsWithProgress(db, event.id).map((d) => ({
+    task: d.slug,
+    title: d.title,
+    who: d.applies_to === 'person' ? 'each speaker' : 'each session',
+    finish_by: d.requirement,
+    due: d.due_at?.slice(0, 10) ?? '-',
+    assigned: d.retired_at ? 'retired' : d.assign_when === 'on_accept' ? 'on acceptance' : 'by hand',
+    outstanding: d.todo,
+    done: d.done,
+  }));
+
+  output(args, rows, 'Nothing is being asked of speakers yet.', 'task');
+  if (!args.json) teachDefine(event);
+  return 0;
+}
+
+function defineTask(db, event, args) {
+  if (typeof args.define !== 'string') {
+    throw withHint(new Error('--define needs a title'),
+      `conf tasks ${event.slug} --define "Upload your slides" --applies-to submission --requirement file`);
+  }
+
+  const requirement = oneOf(args.requirement, REQUIREMENTS, 'requirement', 'acknowledge');
+
+  let formId = null;
+  if (args.form !== undefined || requirement === 'form') {
+    const slug = typeof args.form === 'string' ? args.form : '';
+    const form = slug
+      ? db.prepare('SELECT id FROM form WHERE event_id = ? AND slug = ?').get(event.id, slug)
+      : null;
+    if (!form) {
+      const known = db.prepare('SELECT slug FROM form WHERE event_id = ?').all(event.id)
+        .map((f) => f.slug);
+      throw withHint(
+        new Error(slug ? `no form '${slug}' at this event` : 'a "form" task needs a form to point at'),
+        known.length
+          ? `add --form <slug>; forms are: ${known.join(', ')}`
+          : 'this event has no forms; make one on the web server, or use '
+            + '--requirement acknowledge or --requirement file');
+    }
+    formId = form.id;
+  }
+
+  let dueAt = null;
+  if (args.due !== undefined) {
+    const value = String(args.due);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw withHint(new Error(`could not read '${value}' as a due date`),
+        'use --due YYYY-MM-DD, for example --due 2027-04-30');
+    }
+    // End of day, so "due on the 30th" means the 30th is still usable.
+    dueAt = `${value}T23:59:59Z`;
+  }
+
+  const assignWhen = oneOf(args['assign-when'], ASSIGN_WHEN, 'assign-when', 'on_accept');
+
+  const { definition, assigned } = createTaskDefinition(db, event.id, {
+    title: args.define,
+    appliesTo: oneOf(args['applies-to'], APPLIES_TO, 'applies-to', 'person'),
+    requirement,
+    formId,
+    instructions: typeof args.instructions === 'string' ? args.instructions : '',
+    dueAt,
+    required: !args.optional,
+    assignWhen,
+  });
+
+  if (args.json) {
+    return output(args, {
+      task: definition.slug, title: definition.title, applies_to: definition.applies_to,
+      requirement: definition.requirement, due_at: definition.due_at,
+      assign_when: definition.assign_when, required: Boolean(definition.required),
+      assigned_now: assigned,
+    });
+  }
+
+  console.log(`Now asking for '${definition.title}'  (${definition.slug}).`);
+  console.log(assignWhen === 'on_accept'
+    ? `Given to ${assigned} speaker(s) who are already accepted, and to everyone accepted from now on.`
+    : 'Given to nobody yet. Hand it out with '
+      + `conf tasks ${event.slug} --assign ${definition.slug}`);
+  if (dueAt) {
+    console.log(`Due ${dueAt.slice(0, 10)}. Reminders go out a week before, the day before, `
+      + `and the day after  ->  conf remind ${event.slug} --dry-run`);
+  } else {
+    console.log('No deadline, so the reminder engine will not chase it. Add --due YYYY-MM-DD if it should.');
+  }
+  return 0;
+}
+
+function assignTask(db, event, args) {
+  const definition = requireDefinition(db, event, args.assign, 'assign');
+  if (definition.retired_at) {
+    throw withHint(new Error(`'${definition.title}' is retired, so it is not being collected`),
+      'nothing was assigned. Bring it back on the web server first: '
+      + `POST /e/${event.slug}/tasks/definitions/${definition.slug}/restore`);
+  }
+
+  const assigned = assignToAlreadyAccepted(db, definition);
+  if (args.json) return output(args, { task: definition.slug, assigned });
+
+  console.log(assigned === 0
+    ? `Nobody new. Everybody already accepted has '${definition.title}', or nobody is accepted yet.`
+    : `Gave '${definition.title}' to ${assigned} speaker(s).`);
+  return 0;
+}
+
+function retireTask(db, event, args) {
+  const definition = requireDefinition(db, event, args.retire, 'retire');
+  const usage = taskDefinitionUsage(db, definition.id);
+  const dropped = retireTaskDefinition(db, definition);
+
+  if (args.json) {
+    return output(args, { task: definition.slug, retired: true, dropped, kept: usage.done ?? 0 });
+  }
+  console.log(`Retired '${definition.title}'. Nobody is assigned or reminded about it again.`);
+  console.log(`  ${dropped} outstanding cop(ies) dropped, ${usage.done ?? 0} completed one(s) kept.`);
+  return 0;
+}
+
+function deleteTask(db, event, args) {
+  const definition = requireDefinition(db, event, args.delete, 'delete');
+  const usage = taskDefinitionUsage(db, definition.id);
+  const finished = (usage.done ?? 0) + (usage.waived ?? 0);
+
+  if (finished > 0) {
+    throw withHint(
+      new Error(`${finished} speaker(s) have already completed '${definition.title}'`),
+      'deleting it would delete that record too, and unhook anything they uploaded for it. '
+      + `Nothing was changed. Retire it instead: conf tasks ${event.slug} --retire ${definition.slug}`);
+  }
+
+  db.prepare('DELETE FROM task_definition WHERE id = ?').run(definition.id);
+  if (args.json) return output(args, { task: definition.slug, deleted: true, dropped: usage.todo ?? 0 });
+
+  console.log(`Deleted '${definition.title}' and ${usage.todo ?? 0} outstanding cop(ies) of it.`);
+  return 0;
+}
 
 function recordDecision(db, args, decision) {
   const event = requireEvent(db, args._[1]);

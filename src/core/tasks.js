@@ -4,8 +4,83 @@
 // October 1"). A `task_instance` is one person's copy of it. Everything the
 // speaker portal shows and everything the dashboard counts reads instances.
 
-import { now } from '../db.js';
+import { now, uniqueSlug } from '../db.js';
 import { queueEmail, getTemplate } from './mail.js';
+
+// --- the vocabulary --------------------------------------------------------
+//
+// One list per column, exported, so the screen, the command line and every
+// error message name the same values. A caller who gets one wrong is told what
+// would have worked, and the answer cannot drift between the two interfaces.
+
+/**
+ * Who gets a copy of the task.
+ *
+ * The customer's screens call these "Contact tasks" and "Submission tasks"
+ * (see docs/REQUIREMENTS.md); the column has said 'person' and 'submission'
+ * since 001, so the labels carry the customer's words and the values stay.
+ */
+export const APPLIES_TO = [
+  { value: 'person', label: 'Contact task', short: 'one per speaker',
+    hint: 'One copy per accepted speaker, whatever they are giving. A biography, '
+      + 'a headshot, a signed agreement.' },
+  { value: 'submission', label: 'Submission task', short: 'one per session',
+    hint: 'One copy per accepted session, given to its primary contact. Slides, '
+      + 'an AV form. Co-speakers do not each get their own copy.' },
+];
+
+/** What finishing it takes. */
+export const REQUIREMENTS = [
+  { value: 'acknowledge', label: 'Confirm they have done it',
+    hint: 'A button in the portal. For anything you cannot collect here -- booking a hotel.' },
+  { value: 'form', label: 'Fill in a form',
+    hint: 'Name the form with form=<slug>.' },
+  { value: 'file', label: 'Upload a file',
+    hint: 'The upload lands in Files and in `conf files --zip`, tagged with this task.' },
+];
+
+/** When people get it. */
+export const ASSIGN_WHEN = [
+  { value: 'on_accept', label: 'As soon as a speaker is told they are in',
+    hint: 'And, when you add it later, to everybody already accepted.' },
+  { value: 'manual', label: 'Only when I say so',
+    hint: 'Created but given to nobody until you assign it.' },
+];
+
+// --- assignment ------------------------------------------------------------
+
+const INSERT_INSTANCE =
+  `INSERT OR IGNORE INTO task_instance (definition_id, person_id, submission_id, status, created_at)
+   VALUES (?, ?, ?, 'todo', ?)`;
+
+/**
+ * Give one definition to one submission's people.
+ *
+ * Shared by the two ways a task is handed out -- a submission being accepted,
+ * and a task being created after the fact -- so the two can never disagree
+ * about who owes what. `INSERT OR IGNORE` plus the two unique indexes is what
+ * makes either safe to run twice.
+ */
+function assignOne(db, insert, definition, submissionId, t) {
+  const speakers = db.prepare(
+    `SELECT p.id, sp.is_primary_contact, sp.sort_order
+       FROM submission_participant sp JOIN person p ON p.id = sp.person_id
+      WHERE sp.submission_id = ?
+      ORDER BY sp.sort_order`,
+  ).all(submissionId);
+  if (speakers.length === 0) return 0;
+
+  const primary = speakers.find((s) => s.is_primary_contact) ?? speakers[0];
+  const targets = definition.applies_to === 'person'
+    ? speakers.map((s) => ({ personId: s.id, submissionId: null }))
+    : [{ personId: primary.id, submissionId }];
+
+  let created = 0;
+  for (const target of targets) {
+    created += insert.run(definition.id, target.personId, target.submissionId, t).changes;
+  }
+  return created;
+}
 
 /**
  * Create task instances for a submission that has just been accepted.
@@ -33,37 +108,61 @@ export function assignTasksOnAccept(db, submissionId) {
   const sub = db.prepare('SELECT * FROM submission WHERE id = ?').get(submissionId);
   if (!sub) throw new Error(`no submission with id ${submissionId}`);
 
+  // A retired task is one the event has stopped collecting, so a late
+  // acceptance must not be handed it.
   const definitions = db.prepare(
-    `SELECT * FROM task_definition WHERE event_id = ? AND assign_when = 'on_accept' ORDER BY sort_order`,
+    `SELECT * FROM task_definition
+      WHERE event_id = ? AND assign_when = 'on_accept' AND retired_at IS NULL
+      ORDER BY sort_order`,
   ).all(sub.event_id);
   if (definitions.length === 0) return 0;
 
-  const speakers = db.prepare(
-    `SELECT p.id, sp.is_primary_contact, sp.sort_order
-       FROM submission_participant sp JOIN person p ON p.id = sp.person_id
-      WHERE sp.submission_id = ?
-      ORDER BY sp.sort_order`,
-  ).all(submissionId);
-  if (speakers.length === 0) return 0;
-
-  const primary = speakers.find((s) => s.is_primary_contact) ?? speakers[0];
-
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO task_instance (definition_id, person_id, submission_id, status, created_at)
-     VALUES (?, ?, ?, 'todo', ?)`,
-  );
+  const insert = db.prepare(INSERT_INSTANCE);
+  const t = now();
 
   let created = 0;
-  const t = now();
-  for (const def of definitions) {
-    const targets = def.applies_to === 'person'
-      ? speakers.map((s) => ({ personId: s.id, submissionId: null }))
-      : [{ personId: primary.id, submissionId }];
+  for (const def of definitions) created += assignOne(db, insert, def, submissionId, t);
+  return created;
+}
 
-    for (const target of targets) {
-      created += insert.run(def.id, target.personId, target.submissionId, t).changes;
-    }
-  }
+/**
+ * Give one definition to everybody who is already accepted.
+ *
+ * THE DECISION THIS ENCODES, because it is not obvious and it is not
+ * reversible by accident:
+ *
+ *   A task added after people have been accepted is given to them too.
+ *
+ * The alternative -- assign only to future acceptances -- is what most of these
+ * systems do, and it is wrong here for the same reason `published = 1` was
+ * wrong: it succeeds, it does nothing visible, and nobody finds out. An
+ * organizer who adds "sign the AV form" in March, six weeks after the last
+ * acceptance email went out, is not asking for a task that applies to nobody;
+ * they are asking their speakers for an AV form. Under the other rule the
+ * dashboard reads "0 outstanding", the reminder engine has nothing to chase,
+ * and the first sign of trouble is an empty inbox in April.
+ *
+ * It is not silent in either direction: every caller reports the count back
+ * ("Assigned to 12 speaker(s) who are already accepted"), and `assign_when =
+ * 'manual'` is the way to say "create it, give it to nobody yet".
+ *
+ * "Already accepted" means status = 'accepted': the speakers have been told.
+ * Sessions sitting in `accept_queue` are decided but unannounced, and they pick
+ * the task up through `assignTasksOnAccept` when the notification goes out --
+ * which is the same rule, applied at the same moment, for everybody.
+ */
+export function assignToAlreadyAccepted(db, definition) {
+  if (definition.retired_at) return 0;
+
+  const accepted = db.prepare(
+    `SELECT id FROM submission WHERE event_id = ? AND status = 'accepted' ORDER BY id`,
+  ).all(definition.event_id);
+
+  const insert = db.prepare(INSERT_INSTANCE);
+  const t = now();
+
+  let created = 0;
+  for (const sub of accepted) created += assignOne(db, insert, definition, sub.id, t);
   return created;
 }
 
@@ -95,8 +194,144 @@ export function outstandingTasks(db, eventId, { personId = null, taskSlug = null
 /** The task definitions for an event, for anything that offers a filter. */
 export function taskDefinitions(db, eventId) {
   return db.prepare(
-    'SELECT slug, title, applies_to, requirement, due_at FROM task_definition WHERE event_id = ? ORDER BY sort_order, slug',
+    `SELECT slug, title, applies_to, requirement, due_at, retired_at
+       FROM task_definition WHERE event_id = ? ORDER BY sort_order, slug`,
   ).all(eventId);
+}
+
+// --- managing the definitions themselves -----------------------------------
+
+/** Every definition with how much of it is outstanding, for the editor. */
+export function taskDefinitionsWithProgress(db, eventId) {
+  return db.prepare(
+    `SELECT td.*,
+            (SELECT count(*) FROM task_instance ti
+              WHERE ti.definition_id = td.id AND ti.status = 'todo') AS todo,
+            (SELECT count(*) FROM task_instance ti
+              WHERE ti.definition_id = td.id AND ti.status = 'done') AS done,
+            (SELECT count(*) FROM task_instance ti
+              WHERE ti.definition_id = td.id AND ti.status = 'waived') AS waived,
+            f.slug AS form_slug, f.internal_name AS form_name
+       FROM task_definition td
+       LEFT JOIN form f ON f.id = td.form_id
+      WHERE td.event_id = ?
+      ORDER BY td.retired_at IS NOT NULL, td.sort_order, td.slug`,
+  ).all(eventId);
+}
+
+export function findTaskDefinition(db, eventId, slug) {
+  return db.prepare('SELECT * FROM task_definition WHERE event_id = ? AND slug = ?')
+    .get(eventId, slug) ?? null;
+}
+
+/**
+ * Create a definition and hand it out.
+ *
+ * Validation belongs to the callers, which have their own way of saying "that
+ * is not one of the values" -- `badRequest` on the web, `withHint` on the
+ * command line. What lives here is the part that must not differ between them:
+ * the insert, the slug, and the retroactive assignment.
+ */
+export function createTaskDefinition(db, eventId, {
+  title, slug = null, appliesTo = 'person', requirement = 'acknowledge', formId = null,
+  instructions = '', dueAt = null, required = true, assignWhen = 'on_accept',
+}) {
+  const finalSlug = uniqueSlug(slug || title,
+    (candidate) => Boolean(db.prepare('SELECT 1 FROM task_definition WHERE event_id = ? AND slug = ?')
+      .get(eventId, candidate)));
+
+  const order = db.prepare(
+    'SELECT coalesce(max(sort_order), 0) + 1 AS next FROM task_definition WHERE event_id = ?',
+  ).get(eventId).next;
+
+  const definition = db.prepare(
+    `INSERT INTO task_definition (event_id, slug, title, instructions, applies_to, requirement,
+                                  form_id, due_at, required, assign_when, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+  ).get(eventId, finalSlug, title, instructions, appliesTo, requirement, formId, dueAt,
+    required ? 1 : 0, assignWhen, order);
+
+  const assigned = assignWhen === 'on_accept' ? assignToAlreadyAccepted(db, definition) : 0;
+  return { definition, assigned };
+}
+
+/**
+ * Stop collecting something, without throwing away what people already did.
+ *
+ * Outstanding copies go, because the point of retiring is that nobody owes it
+ * any more -- and leaving them would keep the dashboard counting work nobody is
+ * expected to do and the reminder engine chasing it. Finished copies stay, with
+ * their files and their timestamps; they are the record the delete trigger in
+ * migration 012 exists to protect.
+ */
+export function retireTaskDefinition(db, definition) {
+  const dropped = db.prepare(
+    `DELETE FROM task_instance WHERE definition_id = ? AND status = 'todo'`,
+  ).run(definition.id).changes;
+
+  db.prepare('UPDATE task_definition SET retired_at = ? WHERE id = ?').run(now(), definition.id);
+  return dropped;
+}
+
+/** Bring a retired task back, and give it to everybody it now applies to. */
+export function restoreTaskDefinition(db, definition) {
+  db.prepare('UPDATE task_definition SET retired_at = NULL WHERE id = ?').run(definition.id);
+  const live = db.prepare('SELECT * FROM task_definition WHERE id = ?').get(definition.id);
+  return live.assign_when === 'on_accept' ? assignToAlreadyAccepted(db, live) : 0;
+}
+
+/** How much of a definition somebody has already acted on. */
+export function taskDefinitionUsage(db, definitionId) {
+  return db.prepare(
+    `SELECT count(*) AS total,
+            sum(status = 'todo') AS todo,
+            sum(status = 'done') AS done,
+            sum(status = 'waived') AS waived
+       FROM task_instance WHERE definition_id = ?`,
+  ).get(definitionId);
+}
+
+/**
+ * Swap a definition with its neighbour.
+ *
+ * Order is what the speaker portal and the organizer dashboard both list by, so
+ * "the agreement first, the slides last" is a real preference. Rewrites the
+ * whole list rather than swapping two numbers, so definitions that arrived with
+ * duplicate sort_orders sort themselves out on first use.
+ */
+export function moveTaskDefinition(db, eventId, definition, direction) {
+  // Ordered the way the editor lists them, retired ones last, so "up" moves a
+  // task past the one printed above it rather than past a row nobody can see.
+  const siblings = db.prepare(
+    `SELECT id FROM task_definition WHERE event_id = ?
+      ORDER BY retired_at IS NOT NULL, sort_order, slug`,
+  ).all(eventId);
+
+  const index = siblings.findIndex((d) => d.id === definition.id);
+  const swapIndex = direction === 'up' ? index - 1 : index + 1;
+  if (swapIndex < 0 || swapIndex >= siblings.length) return false;
+
+  const reordered = [...siblings];
+  reordered[index] = siblings[swapIndex];
+  reordered[swapIndex] = siblings[index];
+
+  const update = db.prepare('UPDATE task_definition SET sort_order = ? WHERE id = ?');
+  reordered.forEach((d, i) => update.run(i + 1, d.id));
+  return true;
+}
+
+/** Who owes this particular thing, and who has finished it. */
+export function whoOwes(db, definitionId) {
+  return db.prepare(
+    `SELECT ti.id, ti.status, ti.completed_at,
+            p.slug AS person_slug, p.first_name, p.last_name, p.email,
+            s.code AS submission_code, s.title AS submission_title
+       FROM task_instance ti
+       JOIN person p ON p.id = ti.person_id
+       LEFT JOIN submission s ON s.id = ti.submission_id
+      WHERE ti.definition_id = ?
+      ORDER BY ti.status, p.last_name, p.first_name`,
+  ).all(definitionId);
 }
 
 /** Mark a task done. `fileId` is required when the task is a file upload. */

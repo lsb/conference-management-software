@@ -33,10 +33,29 @@ A 12B model transcribing `f47ac10b-58cc-4372-a567-0e02b2c3d479` between two tool
 will corrupt it. It will not corrupt `sess-opening-keynote`. Every user-facing
 identifier is a slug. Integer primary keys stay internal.
 
-**Every HTML page has a machine-readable twin at an explicit path.**
-`/sessions` renders HTML; `/api/sessions` returns JSON. Explicit paths beat content
-negotiation, because a small model reliably gets a URL right and unreliably gets an
-`Accept:` header right.
+**Machine-readable twins live at explicit paths, not behind an `Accept:` header.**
+A small model reliably gets a URL right and unreliably gets a request header right.
+There are two families of twin, and they are deliberately not the same thing:
+
+- *Organizer data* is under `/api/`, mirroring the organizer screens under `/e/`.
+  `/e/manzanita-2026/speakers` renders HTML; `/api/events/manzanita-2026/speakers`
+  returns JSON. All of it requires organizer access, including the parts that look
+  like a published programme, because it contains decisions nobody has been told yet.
+- *Public data* is an embed, created on purpose with a format:
+  `/embed/<event>/<slug>`. That is the one with a CORS header, and the one that shows
+  only what has been approved *and* published.
+
+This paragraph used to claim that `/sessions` had a twin at `/api/sessions`. It never
+did, and the invented path outlived several people looking for it. `/sessions`,
+`/agenda` and `/speakers` are public pages for humans; the machine-readable public
+feed is an embed, and there is no `/api/sessions` because a feed that appears without
+anybody choosing to publish it is how an unannounced acceptance escapes.
+
+Coverage is not total and does not claim to be. The builders — the form builder, the
+embed and content editors, evaluation setup — are configured over HTML form posts.
+`/api/` reads back what they produced (the embeds that exist, the files that arrived)
+but does not create it. **`GET /llms.txt` is generated from the route table, so it is
+the only list of what exists that cannot be wrong. Prefer it to this file.**
 
 **`/llms.txt` is the front door.**
 A single plain-text file listing what the app is, every route, and a copy-pasteable
@@ -44,12 +63,13 @@ A single plain-text file listing what the app is, every route, and a copy-pastea
 This file is generated from the route table, so it cannot drift out of date.
 
 **Errors state the fix, not just the fault.**
-`{"error": "missing field: title", "hint": "POST /api/sessions requires title, track, starts_at, duration_minutes"}`.
+A real one, from `POST /api/events/manzanita-2026/portal-links` with an empty body:
+`{"error": "missing required field: person", "hint": "body: {\"person\":\"ada-lovelace\"}. Slugs are at /api/events/manzanita-2026/speakers"}`.
 A model that gets a bare `400` retries randomly. A model that is told what is missing
 fixes it on the next call.
 
 **A CLI alongside the HTTP API.**
-`bin/conf sessions list`. Small models are frequently better at composing a shell
+`bin/conf sessions manzanita-2026`. Small models are frequently better at composing a shell
 command than at constructing an HTTP request, and the eval harness drives a coding
 agent that already has a shell. Both surfaces call the same core functions — the CLI
 is not a reimplementation.
