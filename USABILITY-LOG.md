@@ -19,6 +19,90 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 9 — 2026-08-10, the first honest blank-directory run: 3/6
+
+A new suite. `node eval/run-eval.js --http` runs the model in an empty directory
+with nothing but a URL and an API token: no repository, no `bin/conf`, no
+source. `GET /llms.txt` and the routes it describes carry the whole load. It is
+the situation of everybody who meets a deployment, and it is much harder than
+the suite we had.
+
+| Task | Result | |
+| --- | --- | --- |
+| `accept-one` | **pass** 3/3 | decide without notifying, over HTTP |
+| `who-owes-headshot` | **pass** 3/3 | 119-154s, the fastest in the suite |
+| `ask-for-release-form` | **pass** 3/5 | create a task, reach the already-accepted |
+| `count-pending` | **FAIL** 2/5 | answered 6 (`accepted`) not 4 (`pending`), three times |
+| `find-clash` | **FAIL** 0/3 | tried `/api/sessions` six times |
+| `json-feed` | **FAIL** 0/3 | never found the embed route |
+
+### Two earlier runs of this suite are void, and the reason matters
+
+The first said 3/3 on the tasks it reached. It was measuring something else.
+
+**The "empty" directory was inside the repository.** It was created under
+`eval/runs/`, so opencode walked up, found `AGENTS.md`, and read the file that
+says to use `./bin/conf`. An attempt then ran `./bin/conf accept manzanita-2026
+SESS-15` in an empty directory, listed that directory seven times looking for
+the tree it had just been promised, and never made one HTTP request. It was not
+confused; it was correctly following instructions it should never have seen. The
+blank slate was the repository with the files hidden — the worst of both.
+
+**And the prompts were edited while the harness was running.** The task prompts
+are read per task and the runner's code is loaded once, so a later task got a
+prompt telling it to read `.conf-token` from a harness that was not yet writing
+one. It hunted for a file that did not exist.
+
+Both were mine, both were in the instrument rather than the app, and neither
+announced itself: the suite reported ordinary failures throughout. A harness
+that lies is worse than no harness, because it lies quietly and in the
+flattering direction. The working directory is now `mkdtemp` outside the repo,
+and nothing gets edited mid-run.
+
+### One diagnosis explains most of the failures
+
+**Nothing points at `llms.txt`.** Every attempt in the suite begins with
+`GET /api/events`. The ones that go on to fetch `/llms.txt` pass; the ones that
+start guessing routes from there burn their budget and fail. The app has a
+machine-readable index written for exactly this reader, and the only way to find
+it is to already know it exists.
+
+That is finding 5 again, and 7, and 10 — a capability nobody can discover is a
+capability nobody has — in the one place we had not looked, because anybody with
+the repository has `AGENTS.md` to tell them.
+
+**`/api/sessions` is the URL models reach for.** Three independent traces tried
+it; `find-clash` tried it six times in one attempt, and said so in its answer:
+"GET /api/sessions didn't work but it was the most logical path". `DESIGN.md`
+used to promise it existed. It does not.
+
+**Our own 404 suggestions made things worse.** Added earlier the same day, and
+the trace shows the cost: `/api/sessions` was answered with "did you mean GET
+/api/events , GET /api/people?", the model followed `/api/people`, and got 188
+lines about people for a question about schedule clashes. `sessions` and
+`people` share only the literal `api`. A wrong suggestion is worse than none: it
+costs a request and fills the context. The hint also ends "add ?all=1 for every
+route", and five times across three traces the model attached `?all=1` to its
+own failed URL instead of to `/llms.txt`.
+
+**`count-pending` is the interesting failure.** Earlier in the day a model
+miscounted a nineteen-row list, so the list now carries `by_status` and the
+answer is a labelled value rather than rows to tally. It then picked the wrong
+key — `accepted: 6` over `pending: 4` — three times running. `conf status` and
+the dashboard both answer this question in the words the question uses, "4
+awaiting a decision". The JSON API makes you translate. Same one-surface-only
+gap as everything else.
+
+### Timing
+
+Failures here are mostly the clock, not the reasoning: nine of the fourteen were
+timeouts at 900s. On a 12B CPU model the cost is dominated by loading ten
+gigabytes of weights and by prefill. Two attempts produced no tool call at all,
+which is a stalled runner rather than a verdict about the app, and the harness
+now says so instead of scoring it.
+
+---
+
 ## Run 8 — 2026-08-09, the Run 7 failures, fixed one at a time
 
 **All five now pass. The suite is 15/15 at 3 of 5.**
