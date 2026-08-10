@@ -45,6 +45,72 @@ export class Router {
       this.routes.filter((r) => r.regex.test(pathname)).map((r) => r.method),
     )];
   }
+
+  /**
+   * Routes that look like what somebody asked for and did not get.
+   *
+   * Written after watching a local model, told to accept a submission, try
+   * `POST /e/x/submissions/SESS-15/accept` -- a reasonable guess, and wrong,
+   * because deciding is `/decide` with the decision in the body. It got a bare
+   * 404, went and read llms.txt, and came back with the right call a round trip
+   * later. The round trip is the waste: the answer was one segment away and we
+   * knew it. `bin/conf` has suggested near-miss commands since Run 8 for exactly
+   * this reason; the router had never learned the trick.
+   *
+   * Scored on shape, not on spelling: the same number of segments, and at most
+   * one literal segment that differs. Counting mismatched segments rather than
+   * summing letter distance is what makes this useful -- "accept" and "decide"
+   * are one word apart in meaning and five letters apart in text, and a
+   * letter-distance threshold tight enough to be quiet would reject exactly the
+   * case worth catching. Letter distance only breaks ties.
+   */
+  suggestionsFor(method, pathname, limit = 3) {
+    const asked = pathname.split('/').filter(Boolean);
+
+    return this.routes
+      .filter((r) => r.method === method && r.doc)
+      .map((route) => {
+        const parts = route.pattern.split('/').filter(Boolean);
+        if (parts.length !== asked.length) return null;
+
+        let wrong = 0;
+        let drift = 0;
+        let shared = 0;
+        for (const [i, part] of parts.entries()) {
+          if (part.startsWith(':')) continue;          // a parameter fits anything
+          if (part === asked[i]) { shared += 1; continue; }
+          wrong += 1;
+          drift += editDistance(part, asked[i]);
+        }
+
+        // At least one fixed word in common, or this is not a near miss, it is a
+        // different question. Without it a route that is mostly parameters --
+        // /gallery/:event/:person -- gets offered for any three-segment path at
+        // all, and a suggestion that is usually noise is one nobody reads.
+        return wrong <= 1 && shared >= 1 ? { route, wrong, drift } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.wrong - b.wrong || a.drift - b.drift)
+      .slice(0, limit)
+      .map((s) => `${s.route.method} ${s.route.pattern}`);
+  }
+}
+
+/** Levenshtein, small and adequate: these are path segments, not documents. */
+function editDistance(a, b) {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) rows[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = Math.min(
+        rows[i - 1][j] + 1,
+        rows[i][j - 1] + 1,
+        rows[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+  }
+  return rows[a.length][b.length];
 }
 
 function patternToRegex(pattern) {

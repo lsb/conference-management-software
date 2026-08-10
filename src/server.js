@@ -114,8 +114,10 @@ export async function respond(app, { method, url, headers = {}, req = null }) {
       throw new HttpError(405, `${method} is not allowed on ${parsed.pathname}`,
         `try: ${allowed.join(', ')}`);
     }
+    const near = app.router.suggestionsFor(method, parsed.pathname);
     throw new HttpError(404, `no route for ${method} ${parsed.pathname}`,
-      'GET /llms.txt has worked examples of the common jobs; add ?all=1 for every route');
+      (near.length ? `did you mean: ${near.join(' , ')}? ` : '')
+      + 'GET /llms.txt has worked examples of the common jobs; add ?all=1 for every route');
   }
 
   const fields = method === 'POST' && req ? await parseBody(req) : null;

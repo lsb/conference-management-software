@@ -67,3 +67,53 @@ test('routes are matched in registration order', () => {
   assert.equal(r.match('GET', '/portal/sign-in').route.handler, first);
   assert.equal(r.match('GET', '/portal/conf-2026').route.handler, second);
 });
+
+// --- near misses -------------------------------------------------------------
+//
+// From a trace. A local model told to accept a submission tried
+// POST /api/events/x/submissions/SESS-15/accept -- a reasonable guess, and
+// wrong, because deciding is /decide with the decision in the body. It got a
+// bare 404, went away and read llms.txt, and came back with the right call one
+// round trip later. The answer was one segment away and we knew it.
+
+test('a near-miss path suggests the route that was meant', () => {
+  const r = new Router()
+    .post('/api/events/:event/submissions/:code/decide', noop, 'decide')
+    .post('/api/events/:event/notify', noop, 'notify')
+    .get('/api/events/:event/speakers', noop, 'speakers');
+
+  assert.deepEqual(
+    r.suggestionsFor('POST', '/api/events/x/submissions/SESS-15/accept'),
+    ['POST /api/events/:event/submissions/:code/decide'],
+    'accept and decide are one word apart in meaning and five letters apart in text',
+  );
+  assert.ok(r.suggestionsFor('POST', '/api/events/x/notifiy').includes('POST /api/events/:event/notify'),
+    'a typo should be caught too');
+  assert.ok(r.suggestionsFor('GET', '/api/events/x/speaker').includes('GET /api/events/:event/speakers'));
+});
+
+test('an unrelated path suggests nothing at all', () => {
+  // A route that is mostly parameters matches any path of the right length, so
+  // without requiring a shared literal segment this offers nonsense confidently.
+  const r = new Router()
+    .get('/gallery/:event/:person', noop, 'gallery')
+    .get('/submit/:event/:form', noop, 'submit');
+
+  assert.deepEqual(r.suggestionsFor('GET', '/totally/unrelated/nonsense'), []);
+});
+
+test('a suggestion is never a route of a different method', () => {
+  const r = new Router()
+    .post('/api/events/:event/notify', noop, 'notify')
+    .get('/api/events/:event/notify', noop, 'the queue');
+
+  assert.deepEqual(r.suggestionsFor('GET', '/api/events/x/notifiy'),
+    ['GET /api/events/:event/notify']);
+});
+
+test('undocumented routes are never suggested', () => {
+  // llms.txt only lists documented routes, so suggesting an undocumented one
+  // would point somebody at something they cannot then read about.
+  const r = new Router().post('/api/events/:event/decide', noop);
+  assert.deepEqual(r.suggestionsFor('POST', '/api/events/x/decidee'), []);
+});
