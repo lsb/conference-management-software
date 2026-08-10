@@ -115,6 +115,9 @@ function listEvents(ctx) {
 
 function getEvent(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
+  // Counts by status say how many proposals were declined, and how many
+  // decisions are sitting unannounced. Neither is public.
+  requireOrganizer(ctx, event);
   return json({
     ...eventShape(event),
     submissions: statusCounts(ctx.db, event.id),
@@ -282,6 +285,11 @@ function notifyMany(ctx) {
 
 function getAgenda(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
+  // This route's own description calls it the ORGANIZER view, and it means it:
+  // it includes sessions that are scheduled but unapproved and unpublished, so
+  // to a stranger it reads as a list of acceptances the speakers have not been
+  // told about. Anonymously it answered 200. The public feed is /embed/...
+  requireOrganizer(ctx, event);
   const sessions = scheduledSessions(ctx.db, event.id);
 
   return json({
@@ -297,6 +305,8 @@ function getAgenda(ctx) {
 
 function getConflicts(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
+  // Clashes are drawn from the same unpublished schedule as the agenda above.
+  requireOrganizer(ctx, event);
   const conflicts = findConflicts(ctx.db, event.id);
   return json({
     event: event.slug,

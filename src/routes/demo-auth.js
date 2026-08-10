@@ -85,14 +85,24 @@ function requireDemoLogin() {
  * The name and address live outside the button, where they inform a human
  * without widening what the button is called.
  */
-const PERSONAS = [
+export const PERSONAS = [
   // Labels are chosen so that no label is a prefix of another. An automated
   // helper that clicks "the control whose label starts with X" has to find
   // exactly one match, and "Speaker" is a prefix of "Speaker 2".
-  { key: 'organizer', label: 'Organizer', email: 'sbek-organizer@example.com', lands: 'organizer' },
-  { key: 'speaker', label: 'Speaker', email: 'sbek-speaker@example.com', lands: 'speaker' },
-  { key: 'speaker2', label: 'Co-speaker', email: 'sbek-speaker2@example.com', lands: 'speaker' },
-  { key: 'reviewer', label: 'Reviewer', email: 'sbek-reviewer@example.com', lands: 'reviewer' },
+  //
+  // These are people the seed actually creates, and there is a test below that
+  // holds them to it. Every one of them used to be an `sbek-...@example.com`
+  // address that no seed has ever produced, so every button on this page failed
+  // with "Nobody here uses that address" -- the whole page was decorative.
+  //
+  // It went unnoticed for the same reason everything else on this page did:
+  // organizer access is open on loopback, so nobody developing locally ever
+  // needed to sign in, and this is the only door a browser-driven evaluator
+  // that is handed one URL can use.
+  { key: 'organizer', label: 'Organizer', email: 'naomi.okafor@example.com', lands: 'organizer' },
+  { key: 'speaker', label: 'Speaker', email: 'meilin.chen@example.com', lands: 'speaker' },
+  { key: 'speaker2', label: 'Co-speaker', email: 'yusuf.karim@example.com', lands: 'speaker' },
+  { key: 'reviewer', label: 'Reviewer', email: 'sofia.marchetti@example.com', lands: 'reviewer' },
 ];
 
 /**

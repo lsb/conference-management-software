@@ -6,7 +6,7 @@
 // plain form; nothing is hidden behind a wizard step you cannot go back to.
 
 import { html, page, raw } from '../http/html.js';
-import { ok, redirect, badRequest, notFound } from '../http/router.js';
+import { ok, redirect, badRequest, forbidden, notFound } from '../http/router.js';
 import { now, uniqueSlug } from '../db.js';
 import { findEvent, requireOrganizer, organizerNav, empty, tabs, dateOnly } from './shared.js';
 
@@ -98,6 +98,17 @@ function newEventForm(ctx) {
 }
 
 function createEvent(ctx) {
+  // Somebody has to be signed in, for two reasons that point the same way. A
+  // stranger who can reach the origin should not be able to fill the instance
+  // with events; and an event created by nobody has no owner, so nobody can
+  // ever administer it -- it is unreachable from the moment it exists. Being
+  // signed in is the whole requirement: any speaker may propose a conference,
+  // and whoever does becomes its owner below.
+  if (!ctx.person) {
+    throw forbidden('creating an event needs an account',
+      'sign in at /login, or ask for a link at /portal/sign-in, then try again');
+  }
+
   const name = ctx.fields.require('name', 'for example: DevFlow Conf 2027');
   const startsOn = ctx.fields.require('starts_at', 'the first day, as YYYY-MM-DD');
   const endsOn = ctx.fields.require('ends_at', 'the last day, as YYYY-MM-DD');

@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { createApp, respond } from '../src/server.js';
+import { createMagicLink, consumeMagicLink, SESSION_COOKIE } from '../src/core/auth.js';
 import { createSubmission, decide } from '../src/core/submissions.js';
 import { newEvent, addPerson, addSpeaker, outboxFor } from './helpers.js';
 
@@ -28,7 +29,21 @@ function queuedDecisions() {
     codes.push(sub.code);
   }
 
-  return { db, event, codes, app: createApp({ db }) };
+  return { db, event, codes, app: signedInApp(db, owner) };
+}
+
+/**
+ * An app with a real organizer session, minted the way the app mints one.
+ *
+ * Without this these tests only pass where organizer access happens to be open,
+ * which is a property of how the server was started rather than of the app. The
+ * point of `notify` refusing to guess is that it refuses everywhere.
+ */
+function signedInApp(db, person) {
+  const app = createApp({ db });
+  const session = consumeMagicLink(db, createMagicLink(db, person.id, null));
+  app.sessionToken = session.token;
+  return app;
 }
 
 async function postJson(app, url, body) {
@@ -38,7 +53,12 @@ async function postJson(app, url, body) {
   return respond(app, {
     method: 'POST',
     url,
-    headers: { host: '127.0.0.1:8080', 'content-type': 'application/json', accept: 'application/json' },
+    headers: {
+      host: '127.0.0.1:8080',
+      'content-type': 'application/json',
+      accept: 'application/json',
+      ...(app.sessionToken ? { cookie: `${SESSION_COOKIE}=${encodeURIComponent(app.sessionToken)}` } : {}),
+    },
     req,
   });
 }
@@ -86,7 +106,10 @@ test('saying all really does mean all', async () => {
 
 test('with nothing queued it still refuses rather than reporting a cheerful zero', async () => {
   const { db, event } = newEvent();
-  const app = createApp({ db });
+  const owner = addPerson(db, { first: 'Ada', last: 'Lovelace', email: 'ada@example.com' });
+  db.prepare(`INSERT INTO event_membership (event_id, person_id, role) VALUES (?, ?, 'owner')`)
+    .run(event.id, owner.id);
+  const app = signedInApp(db, owner);
 
   const err = await refusal(postJson(app, `/api/events/${event.slug}/notify`, {}));
 

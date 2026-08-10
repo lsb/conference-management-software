@@ -6,7 +6,7 @@
 // sense above an event, and a per-event screen cannot ask them.
 
 import { html, page, raw } from '../http/html.js';
-import { ok, redirect, badRequest, notFound } from '../http/router.js';
+import { ok, redirect, badRequest, forbidden, notFound } from '../http/router.js';
 import {
   searchPeople, personHistory, addNote, notesOn, addTag, removeTag, tagsOn, allTags,
   findDuplicates, mergePeople, saveSegment, segments, runSegment,
@@ -42,10 +42,18 @@ export function mountCrm(router) {
  */
 function requireAnyOrganizer(ctx) {
   const events = ctx.db.prepare('SELECT id FROM event').all();
-  if (events.length === 0) return;
   if (events.some((e) => canOrganize(ctx.db, e.id, ctx.person))) return;
 
-  throw badRequest('organizer access required',
+  // Two things were wrong here, and both only showed themselves off loopback.
+  //
+  // It returned early when the instance had no events, which was meant to keep
+  // a brand-new instance usable and instead left the cross-event speaker
+  // database -- every name, email and private note we hold -- open to anyone
+  // for as long as no event existed.
+  //
+  // And it refused with 400 rather than 403, so a caller checking for "am I
+  // allowed?" sailed straight past it and read the failure as a bad request.
+  throw forbidden('organizer access required',
     'sign in at /login, or at /portal/sign-in with an organizer account');
 }
 
