@@ -5,11 +5,10 @@ import { ok, redirect, badRequest } from '../http/router.js';
 import { decide, notify, awaitingNotification, participantsOf, setStatus } from '../core/submissions.js';
 import { outstandingTasks, runReminders } from '../core/tasks.js';
 import {
-  findConflicts, unscheduledSessions, scheduledSessions, conflictsForSlot,
+  findConflicts, unscheduledSessions, scheduledSessions, conflictsForSlot, placeSession,
   agendaByDay, agendaByRoom, agendaByTrack, agendaGrid, autoSchedule, localTime,
 } from '../core/schedule.js';
 import { createMagicLink } from '../core/auth.js';
-import { sendCalendarInvite } from '../core/ics.js';
 import { contentPanel } from './content.js';
 import { now } from '../db.js';
 import {
@@ -400,6 +399,11 @@ function submissionDetail(ctx) {
         </div>
         <div class="actions">
           <button type="submit">Save schedule</button>
+          <!-- An unchecked checkbox posts nothing, so absence cannot mean "unpublish":
+               a curl caller who simply did not mention publication would silently take
+               the session off the public agenda. This hidden field is how the form says
+               "I have an opinion about publication", leaving absence to mean "leave it". -->
+          <input type="hidden" name="published_set" value="1">
           <label style="display:flex;gap:.4rem;align-items:center;font-weight:400;margin:0">
             <input type="checkbox" name="published" ${submission.published ? raw('checked') : ''}>
             Show on the public agenda
@@ -832,39 +836,31 @@ function postSchedule(ctx) {
   const startsAt = fromLocalInput(ctx.fields.get('starts_at'), event.timezone);
   const endsAt = fromLocalInput(ctx.fields.get('ends_at'), event.timezone);
 
-  // Refuse the move rather than accept it and complain afterwards. An organizer
-  // who has been told "no" still has the old, working schedule.
-  const problems = conflictsForSlot(ctx.db, event.id, {
-    submissionId: submission.id, roomId: room?.id ?? null, startsAt, endsAt,
-  }).filter((p) => p.severity === 'error');
-
-  if (problems.length > 0) {
-    throw badRequest(`that slot clashes: ${problems.map((p) => p.detail).join('; ')}`,
-      'pick a different room or time, or move the other session first');
-  }
+  // Publication is only being changed if the caller said so. The form always
+  // says so, via a hidden field next to the checkbox; a curl caller moving a
+  // talk to a new time says nothing and keeps whatever was already true.
+  const setsPublished = ctx.fields.has('published_set') || ctx.fields.has('published');
+  const published = setsPublished ? ctx.fields.bool('published') : undefined;
 
   // The database refuses this too, but a form should answer for itself rather
   // than letting a trigger do the talking.
-  if (ctx.fields.bool('published') && submission.content_status !== 'approved') {
+  if (published && submission.content_status !== 'approved') {
     throw badRequest('this session cannot go on the public agenda yet: its content is not approved',
       'approve it in the Content section below, then publish');
   }
 
-  const moved = submission.starts_at !== startsAt
-    || submission.ends_at !== endsAt
-    || submission.room_id !== (room?.id ?? null);
+  // Refuses the move rather than accepting it and complaining afterwards. An
+  // organizer who has been told "no" still has the old, working schedule. This
+  // is the same call `conf schedule` makes, which is what keeps the calendar
+  // invite from depending on which interface you happened to use.
+  const { clashes, invited } = placeSession(ctx.db, event.id, submission.id, {
+    roomId: room?.id ?? null, startsAt, endsAt, published,
+  });
 
-  ctx.db.prepare(
-    `UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ?, published = ?, updated_at = ?
-      WHERE id = ?`,
-  ).run(room?.id ?? null, startsAt, endsAt, ctx.fields.bool('published') ? 1 : 0,
-    new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), submission.id);
-
-  // Only when the time or room actually changed. Re-saving the form to tick
-  // "publish" should not put another calendar invite in everyone's inbox.
-  // sendCalendarInvite declines on its own for sessions whose speakers have not
-  // been told yet, so a hold cannot appear for a decision nobody has heard.
-  const invited = moved ? sendCalendarInvite(ctx.db, submission.id) : null;
+  if (clashes.length > 0) {
+    throw badRequest(`that slot clashes: ${clashes.map((p) => p.detail).join('; ')}`,
+      'pick a different room or time, or move the other session first');
+  }
 
   return redirect(`/e/${event.slug}/submissions/${submission.code}`
     + (invited ? `?invited=${invited.messages}` : ''));

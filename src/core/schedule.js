@@ -5,6 +5,9 @@
 // in two rooms at once is the value. So detection lives here, in plain
 // functions, reachable from the UI, the API, and the CLI alike.
 
+import { now } from '../db.js';
+import { sendCalendarInvite } from './ics.js';
+
 /** Half-open overlap: a session ending at 10:00 does not clash with one starting at 10:00. */
 export function overlaps(aStart, aEnd, bStart, bEnd) {
   if (!aStart || !aEnd || !bStart || !bEnd) return false;
@@ -172,6 +175,52 @@ export function conflictsForSlot(db, eventId, { submissionId, roomId, startsAt, 
   return problems;
 }
 
+/**
+ * Move a session into a room at a time, and revise the calendars it affects.
+ *
+ * The single place a session's slot changes. Rescheduling is not just an
+ * UPDATE: a speaker who has already been told they are in is holding a calendar
+ * entry that has to be revised in the same breath. When only one of the two
+ * interfaces did that -- the form did, `conf schedule` did not -- moving a talk
+ * from the command line left every speaker holding the old time, silently. The
+ * fix is not to remember to call two functions; it is for there to be one.
+ *
+ * Changes nothing at all when the slot clashes. The caller is handed the
+ * clashes and phrases its own refusal, because the CLI and the form word it
+ * differently, and an organizer told "no" still has the old, working schedule.
+ *
+ * `published` is left alone when omitted, so the CLI does not have to have an
+ * opinion about publication in order to move a talk.
+ */
+export function placeSession(db, eventId, submissionId, { roomId = null, startsAt, endsAt, published }) {
+  const before = db.prepare('SELECT * FROM submission WHERE id = ?').get(submissionId);
+  if (!before) throw new Error(`no submission with id ${submissionId}`);
+
+  const clashes = conflictsForSlot(db, eventId, { submissionId, roomId, startsAt, endsAt })
+    .filter((c) => c.severity === 'error');
+  if (clashes.length > 0) return { moved: false, clashes, invited: null };
+
+  const moved = before.starts_at !== startsAt
+    || before.ends_at !== endsAt
+    || before.room_id !== roomId;
+
+  const columns = ['room_id = ?', 'starts_at = ?', 'ends_at = ?', 'updated_at = ?'];
+  const values = [roomId, startsAt, endsAt, now()];
+  if (published !== undefined) {
+    columns.push('published = ?');
+    values.push(published ? 1 : 0);
+  }
+  db.prepare(`UPDATE submission SET ${columns.join(', ')} WHERE id = ?`).run(...values, submissionId);
+
+  // Only when the slot actually moved. Re-saving the form to tick "publish"
+  // should not put a second invite in everybody's inbox. sendCalendarInvite
+  // declines on its own for speakers who have not been told their decision yet,
+  // so a calendar hold can never appear for news nobody has heard.
+  const invited = moved ? sendCalendarInvite(db, submissionId) : null;
+
+  return { moved, clashes: [], invited };
+}
+
 /** Sessions grouped by day, for the day and week views. */
 export function agendaByDay(db, eventId, timezone = 'UTC') {
   const byDay = new Map();
@@ -290,6 +339,12 @@ export function candidateSlots(db, eventId, { fromHour = 9, toHour = 18, stepMin
  * otherwise do by hand, after which they move things around by judgement we do
  * not have. Nothing it places is published; it is a draft to argue with.
  *
+ * It does go through `placeSession`, so a speaker who already knows they are
+ * accepted gets the calendar entry for the slot they were just given. That is
+ * the point of telling them, and a later move revises the same entry rather
+ * than adding a second one. Speakers who have not been told their decision get
+ * nothing, which is what keeps a draft from leaking one.
+ *
  * `toInstant` converts a day and a wall-clock time in the event's timezone to
  * an instant, and is injected because that conversion lives in the HTTP layer.
  */
@@ -323,12 +378,13 @@ export function autoSchedule(db, eventId, { toInstant, defaultMinutes = 45 } = {
     const endsAt = new Date(Date.parse(startsAt) + defaultMinutes * 60_000)
       .toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-    db.prepare('UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ? WHERE id = ?')
-      .run(slot.room.id, startsAt, endsAt, session.id);
+    const { invited } = placeSession(db, eventId, session.id, {
+      roomId: slot.room.id, startsAt, endsAt,
+    });
 
     taken.add(`${slot.day} ${slot.time} ${slot.room.id}`);
     placed.push({ code: session.code, title: session.title, room: slot.room.name,
-      day: slot.day, time: slot.time });
+      day: slot.day, time: slot.time, invited: invited ? invited.messages : 0 });
   }
 
   return placed;

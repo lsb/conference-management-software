@@ -10,7 +10,7 @@ import { openDatabase, DEFAULT_DB_PATH, now, uniqueSlug } from './db.js';
 import { decide, notify, awaitingNotification, participantsOf } from './core/submissions.js';
 import { outstandingTasks, runReminders, taskDefinitions } from './core/tasks.js';
 import {
-  findConflicts, scheduledSessions, unscheduledSessions, conflictsForSlot,
+  findConflicts, scheduledSessions, unscheduledSessions, placeSession,
   autoSchedule, localTime, localDay,
 } from './core/schedule.js';
 import { readStoredFile } from './core/files.js';
@@ -551,8 +551,10 @@ const COMMANDS = {
   /**
    * Put one session in a room at a time.
    *
-   * Refuses a clash rather than accepting it, exactly as the web form does --
-   * both call conflictsForSlot, so they cannot disagree about what a clash is.
+   * Refuses a clash rather than accepting it, exactly as the web form does, and
+   * for a stronger reason than agreeing about what a clash is: both call the
+   * same `placeSession`, so there is only one thing to agree with. Moving a talk
+   * from here revises the speakers' calendar entries just as the form does.
    */
   schedule(db, args) {
     const event = requireEvent(db, args._[1]);
@@ -581,20 +583,24 @@ const COMMANDS = {
     const endsAt = new Date(Date.parse(startsAt) + minutes * 60000)
       .toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-    const clashes = conflictsForSlot(db, event.id, {
-      submissionId: submission.id, roomId: room.id, startsAt, endsAt,
-    }).filter((c) => c.severity === 'error');
+    const { clashes, invited } = placeSession(db, event.id, submission.id, {
+      roomId: room.id, startsAt, endsAt,
+    });
 
     if (clashes.length > 0) {
       throw withHint(new Error(`that slot clashes: ${clashes.map((c) => c.detail).join('; ')}`),
         'pick another room or time, or move the other session first');
     }
 
-    db.prepare('UPDATE submission SET room_id = ?, starts_at = ?, ends_at = ? WHERE id = ?')
-      .run(room.id, startsAt, endsAt, submission.id);
-
-    if (args.json) return output(args, { code: submission.code, room: room.slug, starts_at: startsAt, ends_at: endsAt });
+    if (args.json) {
+      return output(args, { code: submission.code, room: room.slug, starts_at: startsAt,
+        ends_at: endsAt, invited: invited ? invited.messages : 0 });
+    }
     console.log(`${submission.code} is now in ${room.name}, ${startsAt} to ${endsAt}.`);
+    if (invited) {
+      console.log(`Calendar ${invited.sequence === 0 ? 'invite' : 'update'} sent to `
+        + `${invited.messages} speaker(s).`);
+    }
     console.log('It is not on the public agenda until its content is approved and it is published.');
     return 0;
   },
