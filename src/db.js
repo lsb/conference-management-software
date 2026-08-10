@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
-const ROOT_DIR = dirname(SRC_DIR);
+export const ROOT_DIR = dirname(SRC_DIR);
 const MIGRATIONS_DIR = join(SRC_DIR, 'migrations');
 
 export const DEFAULT_DB_PATH = join(ROOT_DIR, 'data', 'conference.db');

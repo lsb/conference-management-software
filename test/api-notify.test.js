@@ -57,6 +57,7 @@ async function postJson(app, url, body) {
       host: '127.0.0.1:8080',
       'content-type': 'application/json',
       accept: 'application/json',
+      'sec-fetch-site': 'same-origin',
       ...(app.sessionToken ? { cookie: `${SESSION_COOKIE}=${encodeURIComponent(app.sessionToken)}` } : {}),
     },
     req,

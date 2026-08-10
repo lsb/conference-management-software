@@ -57,19 +57,21 @@ export function mountDemoAuth(router) {
  * seed already put in the database; and it grants nothing but a normal session,
  * so every permission check downstream is the one it always was.
  */
-export function demoLoginIsOpen({
-  flag = process.env.DEMO_LOGIN,
-  host = process.env.HOST ?? '127.0.0.1',
-} = {}) {
-  if (flag === '1' || flag === 'true') return true;
-  if (flag === '0' || flag === 'false') return false;
-  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+export function demoLoginIsOpen({ flag = process.env.DEMO_LOGIN } = {}) {
+  return flag === '1' || flag === 'true';
 }
 
 function requireDemoLogin() {
   if (demoLoginIsOpen()) return;
-  throw forbidden('the demo sign-in page is disabled on this host',
-    'ask for a one-time link at /portal/sign-in, or start the server with DEMO_LOGIN=1');
+  // Off unless asked for, everywhere, with no host inference: this page hands
+  // out a session as somebody else, and whether that is acceptable is a decision
+  // an operator makes, not one the network interface makes for them.
+  //
+  // A deployment being driven by a browser-based evaluator DOES need this on --
+  // it is the only door something with no shell and no repository can use -- and
+  // that is a deliberate choice recorded in docs/DECISIONS.md, not a default.
+  throw forbidden('the demo sign-in page is switched off',
+    'start the server with DEMO_LOGIN=1 to enable it, or sign in properly at /sign-in');
 }
 
 // ---------------------------------------------------------------------------

@@ -102,15 +102,18 @@ test('resolving never creates a person', () => {
     'both spellings of an address are one person, and a stranger is none');
 });
 
-test('demo sign-in is open on loopback and closed anywhere else', () => {
-  assert.equal(demoLoginIsOpen({ flag: undefined, host: '127.0.0.1' }), true);
-  assert.equal(demoLoginIsOpen({ flag: undefined, host: 'localhost' }), true);
-  assert.equal(demoLoginIsOpen({ flag: undefined, host: '::1' }), true);
-  assert.equal(demoLoginIsOpen({ flag: undefined, host: '0.0.0.0' }), false);
-  assert.equal(demoLoginIsOpen({ flag: undefined, host: '10.0.0.4' }), false);
+test('demo sign-in is off unless it is asked for, wherever the server is bound', () => {
+  // It used to infer this from the host, which made the page quietly available
+  // on every laptop and quietly absent on every deployment -- so the only door a
+  // browser-driven evaluator can use worked exactly where nobody needed it. It
+  // is now a decision an operator makes out loud.
+  assert.equal(demoLoginIsOpen({ flag: undefined }), false);
+  assert.equal(demoLoginIsOpen({ flag: '' }), false);
+  assert.equal(demoLoginIsOpen({ flag: '0' }), false);
+  assert.equal(demoLoginIsOpen({ flag: 'false' }), false);
 });
 
-test('DEMO_LOGIN decides it either way when it is set', () => {
-  assert.equal(demoLoginIsOpen({ flag: '1', host: '0.0.0.0' }), true);
-  assert.equal(demoLoginIsOpen({ flag: '0', host: '127.0.0.1' }), false);
+test('DEMO_LOGIN turns it on, and nothing else does', () => {
+  assert.equal(demoLoginIsOpen({ flag: '1' }), true);
+  assert.equal(demoLoginIsOpen({ flag: 'true' }), true);
 });

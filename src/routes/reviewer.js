@@ -11,7 +11,7 @@
 import { html, page, raw } from '../http/html.js';
 import { ok, redirect, badRequest, forbidden, notFound } from '../http/router.js';
 import { now } from '../db.js';
-import { rolesFor, organizerAccessIsOpen } from '../core/auth.js';
+import { rolesFor } from '../core/auth.js';
 import { findEvent, empty, statusPill, fullName } from './shared.js';
 
 export function mountReviewer(router) {
@@ -28,26 +28,17 @@ export function mountReviewer(router) {
     'Declare a conflict of interest and hand the submission back.');
 }
 
-/**
- * Which person is reviewing.
- *
- * On loopback with nobody signed in, fall back to any reviewer on the event so
- * the screens are explorable in a local demo. Off loopback this requires a real
- * signed-in reviewer.
- */
+/** Which person is reviewing. Always a real signed-in one, everywhere. */
 function reviewerFor(ctx, event) {
+  if (ctx.person?.is_admin) return ctx.person;
   if (ctx.person && rolesFor(ctx.db, event.id, ctx.person.id).length > 0) return ctx.person;
 
-  if (organizerAccessIsOpen()) {
-    const anyReviewer = ctx.db.prepare(
-      `SELECT p.* FROM event_membership m JOIN person p ON p.id = m.person_id
-        WHERE m.event_id = ? AND m.role = 'reviewer' LIMIT 1`,
-    ).get(event.id);
-    if (anyReviewer) return anyReviewer;
-  }
-
+  // There used to be a branch here that, on loopback, borrowed whichever
+  // reviewer the seed happened to create first. It made the review queue look
+  // like it worked without anybody signing in, which meant the signed-in path
+  // was never exercised until a deployment exercised it for us.
   throw forbidden('reviewer access required',
-    'sign in at /portal/sign-in with an account that reviews for this event');
+    'sign in at /sign-in, or ask an organizer to add you at /e/<event>/people');
 }
 
 function findReview(ctx, event, reviewer, code) {

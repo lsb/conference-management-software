@@ -6,7 +6,7 @@
 import { html, page, raw } from '../http/html.js';
 import { ok, redirect, badRequest, forbidden, notFound } from '../http/router.js';
 import { now } from '../db.js';
-import { createMagicLink, consumeMagicLink, signOut, SESSION_COOKIE, organizerAccessIsOpen } from '../core/auth.js';
+import { createMagicLink, consumeMagicLink, signOut, SESSION_COOKIE } from '../core/auth.js';
 import { cookieHeader, clearCookieHeader } from '../http/request.js';
 import { outstandingTasks, completeTask } from '../core/tasks.js';
 import { queueEmail } from '../core/mail.js';
@@ -93,7 +93,7 @@ function postSignIn(ctx) {
   // leaks the speaker list of every conference on this instance.
   if (person && event) {
     const token = createMagicLink(ctx.db, person.id, event.id);
-    const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+    const base = ctx.origin;
     queueEmail(ctx.db, {
       eventId: event.id,
       to: person,

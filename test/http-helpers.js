@@ -73,7 +73,15 @@ export async function post(app, url, fields = {}, { cookies = null } = {}) {
 
 function headersFor(cookies) {
   const jar = Object.entries(cookies).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
-  return { host: '127.0.0.1:8080', ...(jar ? { cookie: jar } : {}) };
+  return {
+    host: '127.0.0.1:8080',
+    // A real browser adds one of these to every request and the server refuses
+    // cookie-authenticated writes without them. These requests have no browser,
+    // so the helper stands in for one. Sending `same-origin` is honest: that is
+    // what an in-process request from the app's own forms is.
+    'sec-fetch-site': 'same-origin',
+    ...(jar ? { cookie: jar } : {}),
+  };
 }
 
 /** Assert a response redirected, and return where to. */

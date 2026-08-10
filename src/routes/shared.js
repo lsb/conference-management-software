@@ -43,8 +43,14 @@ export function findSubmission(db, eventId, code) {
 
 export function requireOrganizer(ctx, event) {
   if (!canOrganize(ctx.db, event.id, ctx.person)) {
+    // Names both doors, because the two callers who hit this need different
+    // ones. The old hint sent everybody to /portal/sign-in, which is the
+    // speaker door and mails a link this app cannot send -- and told a script
+    // to go and do something no script can do.
     throw forbidden('organizer access required',
-      'sign in at /portal/sign-in with an organizer account');
+      'scripts: send `authorization: bearer <token>` (mint one at /account). '
+      + 'People: sign in at /sign-in. If you have no account, an organizer adds you '
+      + `at /e/${event.slug}/people.`);
   }
 }
 
@@ -76,6 +82,7 @@ export function organizerNav(event, current) {
     ['/agenda', 'Agenda'],
     ['/speakers', 'Speakers'],
     ['/tasks', 'Tasks'],
+    ['/tasks/definitions', 'Task setup'],
     ['/review', 'Review'],
     ['/forms', 'Forms'],
     ['/files', 'Files'],

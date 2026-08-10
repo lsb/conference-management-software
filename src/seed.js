@@ -1492,8 +1492,27 @@ console.log(`  ${pad('last year')}${past.name}, ${one(
     WHERE event_id = ? AND role = 'reviewer' AND person_id IN (${lastYearsPeople})`, event.id, past.id,
 )} came back as a reviewer`);
 
-console.log(`\n  Sign in as naomi.okafor@example.com (owner) or diego.herrera@example.com`);
-console.log('  (organizer, programme chair). Speakers have no password either: every');
-console.log('  address is @example.com and reaches its portal by magic link.\n');
+// The demo owner is also the instance administrator, with a known password.
+//
+// Without this a freshly seeded instance has organizers who cannot sign in --
+// there is no mail transport, so a magic link reaches nobody -- and the whole
+// app is unusable to anybody who did not claim it with the setup token. A demo
+// database exists to be signed into.
+//
+// It is a demo credential and it is meant to look like one. A real deployment
+// claims itself at /setup/claim and never runs this file.
+const DEMO_PASSWORD = 'conference-demo-password';
+db.prepare('UPDATE person SET is_admin = 1 WHERE email = ?').run('naomi.okafor@example.com');
+{
+  const admin = db.prepare('SELECT id FROM person WHERE email = ?').get('naomi.okafor@example.com');
+  const { hashPassword, setPassword } = await import('./core/auth.js');
+  setPassword(db, admin.id, await hashPassword(DEMO_PASSWORD));
+}
+
+console.log(`\n  Sign in at /sign-in as naomi.okafor@example.com`);
+console.log(`  with the password: ${DEMO_PASSWORD}`);
+console.log('  She owns both events and administers this instance.');
+console.log('  Speakers have no password: every address is @example.com and');
+console.log('  reaches its portal by magic link, or via /login in a demo.\n');
 
 db.close();

@@ -2,6 +2,7 @@
 
 import { badRequest } from './router.js';
 import { parseMultipart } from './multipart.js';
+import { cookiesAreSecure } from '../core/auth.js';
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
@@ -156,8 +157,19 @@ export function parseCookies(header = '') {
   return out;
 }
 
+/**
+ * `Secure` comes from PUBLIC_ORIGIN being https, not from sniffing the request,
+ * so a cookie behaves the same way every time this instance is started.
+ *
+ * No `__Host-` prefix, though both OWASP and NIST ask for one. Chrome and Safari
+ * reject prefixed cookies over plain HTTP on loopback, which would make local
+ * development impossible in two of three browsers without terminating TLS on a
+ * laptop. The mitigation is that this app is one origin by design (D11) with no
+ * subdomains to be shadowed from.
+ */
 export function cookieHeader(name, value, { maxAge = 60 * 60 * 24 * 30, path = '/' } = {}) {
-  return `${name}=${encodeURIComponent(value)}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`;
+  return `${name}=${encodeURIComponent(value)}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`
+    + (cookiesAreSecure() ? '; Secure' : '');
 }
 
 export function clearCookieHeader(name, { path = '/' } = {}) {

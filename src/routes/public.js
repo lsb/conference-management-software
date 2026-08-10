@@ -392,7 +392,7 @@ function postCfp(ctx) {
   // `keepToken` is theirs to keep. `signInToken` is spent immediately.
   const keepToken = createMagicLink(ctx.db, person.id, event.id);
   const signInToken = createMagicLink(ctx.db, person.id, event.id);
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
   const portalUrl = `${base}/portal/${event.slug}/enter?token=${keepToken}`;
 
   // A draft has not been submitted, so there is nothing to confirm. Sending
@@ -518,7 +518,7 @@ function embedFeed(ctx) {
       'an organizer can re-enable it in the event\'s Embeds screen');
   }
 
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : '';
+  const base = ctx.origin;
   const { contentType, body } = renderFeed(ctx.db, event, embed, { baseUrl: base });
 
   return {

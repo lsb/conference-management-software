@@ -502,7 +502,7 @@ function addReviewer(ctx) {
   // Show the sign-in link rather than only emailing it. An organizer setting up
   // a committee on a Sunday should not be blocked waiting for an inbox.
   const token = createMagicLink(ctx.db, person.id, event.id);
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
   const link = `${base}/portal/${event.slug}/enter?token=${token}`;
 
   queueEmail(ctx.db, {
@@ -619,7 +619,7 @@ function remindReviewers(ctx) {
   const plan = findPlan(ctx, event, ctx.params.plan);
 
   const behind = poolOf(ctx.db, plan.id).filter((r) => r.assigned > r.done);
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
 
   for (const reviewer of behind) {
     const link = `${base}/portal/${event.slug}/enter?token=${createMagicLink(ctx.db, reviewer.id, event.id)}`;

@@ -39,7 +39,7 @@ function findEmbed(ctx, event, slug) {
 }
 
 function publicUrl(ctx, event, embed) {
-  const base = ctx.headers?.host ? `http://${ctx.headers.host}` : 'http://127.0.0.1:8080';
+  const base = ctx.origin;
   const extension = embed.format === 'html' ? '' : `.${embed.format}`;
   return `${base}/embed/${event.slug}/${embed.slug}${extension}`;
 }
