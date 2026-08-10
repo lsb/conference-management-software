@@ -19,6 +19,71 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 12 — 2026-08-10, 7 of 8, and the suite finally tests the brief
+
+Asked where the `json-feed` task had come from, and the answer was: not the
+customer. Feature 9 -- the embeddable gallery and schedule itinerary -- is struck
+through in the brief, and the screenshot of the incumbent's embed screen is
+annotated OPTIONAL. We built embeds anyway because the public agenda already
+existed and they were nearly free. Then we spent four fix cycles hardening the
+one eval task that maps to a struck requirement.
+
+What it displaced is the real cost. The customer's three strongest annotations
+are "must have" on the submitter confirmation email, "make sure this works" on
+the success page and portal handoff, and "update your own bio data". The suite
+had a task for the optional thing and none for those. It was seeded by copying
+the repo-mode list across, and nobody checked it against `REQUIREMENTS.md`.
+
+Two tasks added, both organizer jobs over HTTP, both features with no coverage:
+
+| Task | Result | |
+| --- | --- | --- |
+| `accept-one` | pass 3/3 | |
+| `ask-for-release-form` | pass 3/4 | |
+| `count-pending` | pass 3/4 | |
+| `find-clash` | pass 3/3 | 0/3 three runs ago |
+| `json-feed` | **pass 3/5** | had never passed |
+| `route-by-track` | **FAIL** 0/3 | new, feature 1 |
+| `tell-everyone-who-owes` | pass 3/4 | new, feature 3 |
+| `who-owes-headshot` | pass 3/3 | |
+
+### The new communications task passed, and that is the reassuring one
+
+`tell-everyone-who-owes` is scored so that it fails outright if a decision email
+goes out, because this app has two ways to email people and only one is right
+for chasing paperwork. The model reached for `mail` rather than `notify` three
+times running. Splitting those into two verbs was justified after Run 4 as
+protecting a tired human at 11pm; it is now measurably protecting a machine.
+
+### The new routing task failed, for exactly the reason it was worth adding
+
+Both attempts found the right route from the recipe. Then they needed what the
+recipe told them to supply -- "`plan` is a review round slug (GET
+/e/EVENT/evaluation)" -- and that route serves HTML. One fetched it, pulled a
+page of forms into a context with no room for it, and timed out holding the
+answer it had gone to find.
+
+Rooms and tracks already ride along on `GET /api/events/:event` because you have
+to name a room before you can schedule anything. A review round is the same
+shape of prerequisite and was simply missing. Fixed during the run, so 0/3 is
+honest for the code that was running and not a verdict on the code now.
+
+The HTTP-parity audit did not catch this, and could not have: routing shipped
+after it ran. **An audit certifies the day it was taken.** Everything added
+afterwards is unaudited by construction, and the gap stayed invisible until
+something tried to use the feature end to end.
+
+### json-feed, finally
+
+0/3, 0/3, 1/4, now 3/5, and the trajectory tracks the four fixes exactly. It was
+unreachable while nothing pointed at llms.txt. Then it reached the docs and
+answered with the organizer agenda -- which now warns, in its own response, that
+it is not a public feed. Then it read the recipe and quoted the URL printed
+beneath the work -- so the recipe stopped printing one. And creating an embed
+now hands back the public URL instead of a 303 to an admin page.
+
+---
+
 ## Run 11 — 2026-08-10, 5 of 6, and every prediction held
 
 | Task | Run 9 | Run 10 | Run 11 |
