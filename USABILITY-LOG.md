@@ -19,6 +19,74 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 11 — 2026-08-10, 5 of 6, and every prediction held
+
+| Task | Run 9 | Run 10 | Run 11 |
+| --- | --- | --- | --- |
+| `accept-one` | pass 3/3 | pass 3/3 | pass 3/4 |
+| `ask-for-release-form` | pass 3/5 | **FAIL** 2/5 | pass 3/4 |
+| `count-pending` | **FAIL** 2/5 | pass 3/4 | pass 3/3 |
+| `find-clash` | **FAIL** 0/3 | pass 3/4 | pass 3/3 |
+| `who-owes-headshot` | pass 3/3 | **FAIL** 2/5 | pass 3/3 |
+| `json-feed` | FAIL 0/3 | FAIL 0/3 | FAIL 1/4 |
+
+Predictions were written down before the run, which is the only way this kind of
+result means anything:
+
+- `who-owes-headshot` should recover, because its "5 of 6 surnames" failures were
+  eye-filtering a mixed list and `by_task` removes the need. **3/3.**
+- The `?all=1` misattachments should stop entirely. **None in the run.** No
+  malformed shell either.
+- `json-feed` should keep failing. It did.
+
+`find-clash` is the one to look at: 0/3, then 3/4, then 3/3. It was impossible
+two runs ago. What changed was one field on `GET /api/events` saying where the
+documentation is.
+
+### The regression I caused is gone, and so is its cause
+
+Run 10 broke `who-owes-headshot` (3/3 to 2/5) with a `docs_note` that told
+readers to "add ?all=1" -- which they appended to whatever URL they held, and
+once wrote unquoted into zsh, where the shell ate the request before it reached
+us. Replaced with two whole URLs, `docs` and `docs_all_routes`. Zero
+misattachments this run.
+
+### `json-feed`, and a claim I had to withdraw
+
+I recorded in Run 10 that this failure was not the app's to fix: the model finds
+the recipe, writes the exact right command, and does not run it. Then attempt 3
+ran it and passed.
+
+The traces separate cleanly:
+
+| | calls | fetched llms.txt | result |
+| --- | --- | --- | --- |
+| attempt 1 | 2 | no | narrated |
+| attempt 3 | 5 | **yes** | POSTed, passed |
+
+So it is the same diagnosis as `find-clash` after all, not a different one:
+reading the documentation is what separates success from failure, and the
+pointer to it is followed inconsistently. Narrating instead of acting is
+downstream of never having read the recipe, not independent of it.
+
+Which suggests something cheap and testable: `docs` sits *after* the `events`
+array in that response, so a reader going top-down meets the data first and
+starts work before reaching the pointer. The submission list already puts
+`by_status` before the rows for exactly this reason and this route was not given
+the same treatment. If moving it does not shift the number, the ordering
+hypothesis is wrong and gets recorded as wrong.
+
+### What the three runs cost, and what they bought
+
+Nine app fixes, none of which a unit test would have produced, and three of them
+for defects introduced earlier the same day. The suite grew from 189 tests to
+346 over the same period and did not find one of them.
+
+The pattern in almost every case: the app was correct and insufficiently legible
+at the exact point somebody was about to go wrong.
+
+---
+
 ## Run 10 — 2026-08-10, the fixes worked and I broke something else: 3/6
 
 Same headline as Run 9 and a different composition, which is the whole story.
