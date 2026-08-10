@@ -17,3 +17,6 @@ eval/runs/
 # it is large, and it names the incumbent vendor (see docs/DECISIONS.md, D8).
 *.pdf
 
+
+# The setup token on a locally-started instance that nobody has claimed yet.
+data/setup-token
