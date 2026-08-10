@@ -21,7 +21,9 @@
 import { spawnSync } from 'node:child_process';
 import {
   readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, rmSync, renameSync,
+  mkdtempSync, cpSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -122,9 +124,15 @@ for (const task of tasks) {
     let filledPrompt = prompt;
 
     if (HTTP_MODE) {
-      workingDir = join(runDir, `${task}.attempt-${n}.cwd`);
-      rmSync(workingDir, { recursive: true, force: true });
-      mkdirSync(workingDir, { recursive: true });
+      // OUTSIDE the repository, and this is the whole point.
+      //
+      // The first version put it under eval/runs/, which is inside the project
+      // -- so opencode walked up, found AGENTS.md, and was told to use
+      // `./bin/conf`. An attempt duly ran `./bin/conf accept ...` in an empty
+      // directory, then listed it seven times looking for the tree it had just
+      // read about, and never made a single HTTP request. The blank slate was
+      // never blank; it was the repository with the files hidden.
+      workingDir = mkdtempSync(join(tmpdir(), `conf-eval-${task}-`));
 
       const minted = spawnSync('node', [join(EVAL_DIR, 'mint-token.js')],
         { cwd: ROOT_DIR, encoding: 'utf8' });
@@ -166,6 +174,15 @@ for (const task of tasks) {
     });
     const seconds = Math.round((Date.now() - began) / 1000);
     const answer = (run.stdout ?? '').trim();
+
+    // Keep what the model left behind next to its trace, then take the scratch
+    // directory away: some tasks are scored on a file they were asked to write.
+    if (HTTP_MODE) {
+      const kept = join(runDir, `${task}.attempt-${n}.cwd`);
+      rmSync(kept, { recursive: true, force: true });
+      cpSync(workingDir, kept, { recursive: true });
+      rmSync(workingDir, { recursive: true, force: true });
+    }
 
     // An attempt that made no tool call at all is a stalled model, not a verdict
     // about the app, and counting it as a failure quietly turns the score into
