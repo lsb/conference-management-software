@@ -19,6 +19,91 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 13 — 2026-08-10, 6 of 8, and the first run I would defend
+
+| Task | Run 12 | Run 13 |
+| --- | --- | --- |
+| `accept-one` | pass 3/3 | pass 3/3 |
+| `ask-for-release-form` | pass 3/4 | pass 3/3 |
+| `count-pending` | pass 3/4 | pass 3/4 |
+| `find-clash` | pass 3/3 | pass 3/3 |
+| `json-feed` | pass 3/5 | pass 3/4 |
+| `route-by-track` | FAIL 0/3 | **FAIL 2/5** |
+| `tell-everyone-who-owes` | pass 3/4 | **FAIL 1/4** |
+| `who-owes-headshot` | pass 3/3 | pass 3/4 |
+
+Lower than Run 12's 7/8 and worth more, because Run 12 was measured against a
+database that was not resetting between attempts.
+
+### The seed had been broken and nothing said so
+
+Found by accident. Checking that `route-by-track` was achievable at all, I made
+one routing rule by hand, re-seeded, and noticed the rule was still there.
+
+`npm run seed` empties every table with foreign keys off, on the grounds that
+order should not matter. Foreign keys off does not turn triggers off, and
+migration 010 added a trigger refusing to delete a review round that a routing
+rule assigns to. The wipe aborted half-way.
+
+Whether it fired came down to spelling. The wipe runs alphabetically:
+`evaluation_plan` sorts before `event`, so rounds were deleted while events still
+existed -- exactly when the trigger's "unless the whole conference is going"
+guard still holds. `task_definition` carries the same protection and never fired,
+purely because `event` sorts before it. Two triggers, one bug, decided by where a
+letter falls.
+
+And eval setup ran it as `npm run seed >/dev/null 2>&1`, so a failed reset was
+invisible: every attempt after the first ran against whatever the last one left
+behind. That is the exact thing re-seeding exists to prevent. Events are deleted
+first now, which makes every guard false before the loop starts, and a failed
+seed stops the task loudly.
+
+### Three failures today were mine, not the app's
+
+Worth listing together, because they share a shape.
+
+- A checker counting rows against `person_id` on a table whose column is
+  `to_person_id`. SQLite errored, the count came back empty, the comparison
+  failed, and an attempt was scored as a model failure.
+- A task prompt asking to route "proposals about retrieval" to "the
+  machine-learning review round". The conference has neither. I had lifted both
+  values out of the llms.txt recipe, where they were meant as placeholders.
+- The recipe itself, for printing `value=retrieval` and `plan=first-round-ml`
+  next to `EVENT` and `FORM`. Two of those are obviously slots and two look like
+  data. It fooled me before it fooled any model, which is the strongest possible
+  evidence it was a trap.
+
+Each produced a confident finding about the app out of nothing. A wrong checker
+is worse than no checker.
+
+### What actually improved
+
+`route-by-track` went 0/3 to 2/5, still short of the bar but no longer
+impossible. Both passes took about 250 seconds; every failure was the clock, not
+a wrong answer. Creating a routing rule needs a form slug and a review-round
+slug, and both were reachable only by fetching an organizer page and reading them
+out of the HTML. They ride on the event now, with the rooms and tracks.
+
+That is the fourth prerequisite to be added the same way, so it stopped being a
+list of patches and became a rule with a test behind it: **if a route requires
+you to name something before it will act, that name is on the event.** `api.js`
+had claimed exactly this in its header since it was written -- "discovering an
+identifier by deliberately failing a request is not discovery" -- while the code
+did not do it. A stated principle with no test is a hope.
+
+### The two failures
+
+`route-by-track` is the hardest task in the suite and now genuinely marginal: I
+did it by hand in two calls, so the path is clean and the cost is inference time.
+
+`tell-everyone-who-owes` was 3/4 in Run 12 and 1/4 here. The audience resolves
+identically in both, so this is variance on a marginal task rather than a
+regression. Its failures were sending nothing at all, never sending the wrong
+thing: no decision email went out in either run, and the checker fails loudly if
+one does. The safety property holds even when the task does not.
+
+---
+
 ## Run 12 — 2026-08-10, 7 of 8, and the suite finally tests the brief
 
 Asked where the `json-feed` task had come from, and the answer was: not the
