@@ -138,6 +138,11 @@ export function findDuplicates(db) {
  *
  * The winner keeps its own non-empty fields and inherits the loser's where it
  * had none, so merging never loses a biography by preferring a blank one.
+ *
+ * All of it in one transaction. There are twenty-odd statements here and the
+ * person row is deleted by the last of them; a merge that failed half way
+ * through would leave a human split across two records with their history on
+ * one and their login on the other, and no way to tell that had happened.
  */
 export function mergePeople(db, keepId, mergeId, { actorPersonId = null } = {}) {
   if (keepId === mergeId) throw new Error('cannot merge somebody into themselves');
@@ -145,6 +150,21 @@ export function mergePeople(db, keepId, mergeId, { actorPersonId = null } = {}) 
   const keep = db.prepare('SELECT * FROM person WHERE id = ?').get(keepId);
   const merge = db.prepare('SELECT * FROM person WHERE id = ?').get(mergeId);
   if (!keep || !merge) throw new Error('both people must exist to merge them');
+
+  db.exec('BEGIN');
+  try {
+    const result = mergeInto(db, keep, merge, actorPersonId);
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function mergeInto(db, keep, merge, actorPersonId) {
+  const keepId = keep.id;
+  const mergeId = merge.id;
 
   const fields = ['first_name', 'last_name', 'job_title', 'company', 'biography',
     'phone', 'pronouns', 'honorific', 'salutation', 'gender',
@@ -188,13 +208,48 @@ export function mergePeople(db, keepId, mergeId, { actorPersonId = null } = {}) 
     .run(keepId, mergeId);
   db.prepare('DELETE FROM pipeline_card WHERE person_id = ?').run(mergeId);
 
+  // Reviewing duty is work somebody agreed to do, not a record of the past.
+  // Left behind it cascades away with the duplicate: the plan quietly has one
+  // reviewer fewer and nobody is told, which surfaces weeks later as a round
+  // that will not close.
+  db.prepare('UPDATE OR IGNORE plan_reviewer SET person_id = ? WHERE person_id = ?')
+    .run(keepId, mergeId);
+  db.prepare('DELETE FROM plan_reviewer WHERE person_id = ?').run(mergeId);
+
   for (const [table, column] of [
     ['person_note', 'person_id'],
     ['submission', 'submitted_by_person_id'],
     ['outbox', 'to_person_id'],
     ['file', 'uploaded_by_person_id'],
+
+    // Authorship, all of it `ON DELETE SET NULL`, which is the right rule for a
+    // person genuinely leaving and the wrong one here: this human has not left,
+    // their other record has. Unmoved, "Ada decided this" becomes "somebody
+    // decided this" as a side effect of tidying a duplicate, and the audit
+    // trail is worth less than the tidying was.
+    ['activity', 'actor_person_id'],
+    ['person_note', 'author_person_id'],
+    ['file_comment', 'person_id'],
+    ['submission_revision', 'changed_by_person_id'],
+    ['submission', 'decided_by_person_id'],
+    ['pipeline_move', 'actor_person_id'],
   ]) {
     db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ?`).run(keepId, mergeId);
+  }
+
+  // How they get in. All four cascade, so merging used to lock somebody out of
+  // their own account without saying so: the password on the duplicate record
+  // was destroyed, their API tokens stopped working, and the portal link
+  // already sitting in their inbox started answering 410.
+  //
+  // The credential moves only if the survivor has none, because that row is
+  // keyed by person and the surviving password is the one to trust.
+  if (!db.prepare('SELECT 1 FROM person_credential WHERE person_id = ?').get(keepId)) {
+    db.prepare('UPDATE person_credential SET person_id = ? WHERE person_id = ?')
+      .run(keepId, mergeId);
+  }
+  for (const table of ['api_token', 'magic_link', 'auth_session']) {
+    db.prepare(`UPDATE ${table} SET person_id = ? WHERE person_id = ?`).run(keepId, mergeId);
   }
 
   // The other address is worth keeping: it is how they will write to us next
