@@ -37,9 +37,14 @@ fi
 # Every /embed/<event>/... URL the answer mentions, with trailing punctuation
 # from the surrounding prose removed. '.json' survives; a sentence-ending '.'
 # does not.
+# Trailing punctuation is stripped rather than matched, because an answer is
+# prose and prose has edges. A model wrapped the correct URL in markdown italics
+# -- _http://.../agenda.json_ -- and the underscore came along inside the match,
+# so a perfect answer was fetched as agenda.json_ and scored as a failure. The
+# app was right, the model was right, and the checker was wrong.
 paths=$(printf '%s' "$answer" \
   | grep -oE "/embed/$event/[A-Za-z0-9._-]+" \
-  | sed 's/[.,;:)]*$//' | sort -u)
+  | sed 's/[^A-Za-z0-9]*$//' | sort -u)
 
 if [ -z "$paths" ]; then
   echo "the answer does not name a /embed/$event/... URL"
