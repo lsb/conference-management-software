@@ -22,7 +22,9 @@ export function mountReviewer(router) {
     'The scoring form for one submission.');
 
   router.post('/review/:event/:code', postScore,
-    'Save scores and a comment. Add submit=1 to mark the review finished.');
+    'Body: one field per criterion slug, plus comment. Saves a partial review. '
+    + 'Add submit_review=1 to mark it finished, which requires every criterion to be '
+    + 'scored and is what moves it off the outstanding list.');
 
   router.post('/review/:event/:code/conflict', postConflict,
     'Declare a conflict of interest and hand the submission back.');
@@ -276,7 +278,21 @@ function postScore(ctx) {
   }
 
   const criteria = criteriaFor(ctx.db, review.plan_id);
-  const finishing = ctx.fields.bool('submit_review');
+
+  // Both names, and the second one is why this is worth a comment.
+  //
+  // `submit_review` is what the form's button is called. This route's own
+  // documentation -- the text /llms.txt publishes -- said `submit=1` instead,
+  // and had done since it was written. A script following it got a 303 to
+  // `?saved=1`, which reads exactly like success, and left the review sitting
+  // in `in_progress`: the reviewer believed they had submitted, and the
+  // organizer's outstanding count still included them. Silent, and only over
+  // curl, because a browser presses the button.
+  //
+  // The docstring is corrected below, but scripts written against the
+  // published contract exist and there is no version of this where breaking
+  // them is better than accepting a second name.
+  const finishing = ctx.fields.bool('submit_review') || ctx.fields.bool('submit');
   const upsert = ctx.db.prepare(
     'INSERT OR REPLACE INTO score (review_id, criterion_id, value, text_value) VALUES (?, ?, ?, ?)',
   );
