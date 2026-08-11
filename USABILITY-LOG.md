@@ -19,6 +19,92 @@ How to reproduce: `node eval/run-eval.js`. See `docs/EVAL.md`.
 
 ---
 
+## Run 14 — 2026-08-11, 8 of 9, and a bug the suite could not have found
+
+| Task | Run 13 | Run 14 |
+| --- | --- | --- |
+| `accept-one` | pass 3/3 | pass 3/4 |
+| `ask-for-release-form` | pass 3/3 | pass 3/3 |
+| `count-pending` | pass 3/4 | pass 3/3 |
+| `find-clash` | pass 3/3 | pass 3/3 |
+| `json-feed` | pass 3/4 | pass 3/5 (rescored) |
+| `route-by-track` | FAIL 2/5 | **pass 3/4** |
+| `tell-everyone-who-owes` | FAIL 1/4 | FAIL 2/5 |
+| `what-did-we-send` | — | **pass 3/5** (new) |
+| `who-owes-headshot` | pass 3/4 | pass 3/3 |
+
+`route-by-track` has gone 0/3, 2/5, 3/4 across three runs, which tracks the two
+prerequisite fixes exactly. It stopped being impossible when the form slug and
+the review-round slug stopped requiring an HTML page to find.
+
+`what-did-we-send` is new and maps to the customer's "must have". It passed
+first time out.
+
+### The json-feed number in the first pass was mine, not the model's
+
+Scored 0 of 3 and thrown away. The checker pulled the URL out of the answer with
+a regex that accepted trailing punctuation, so `_http://…/agenda.json_` — the
+model using markdown italics — was fetched with the underscore still attached.
+A correct answer scored zero three times running.
+
+That is the third checker bug in two days, all the same shape: the model did the
+work, and the harness marked it wrong. A wrong checker is worse than no checker,
+because it manufactures a finding about the app out of nothing and you then go
+and "fix" something that was never broken.
+
+### What the rescored failures actually were
+
+Worth writing down because neither is an app defect, and it would be easy to
+record them as one.
+
+Attempt 3 composed this, correctly, including the part everybody gets wrong:
+
+    curl -s -H "authorization: bearer $(cat .conf-token)" -X POST \
+      http://127.0.0.1:8080/e/manzanita-2026/embeds \
+      --data "name=Agenda&feed=agenda&format=json"
+
+and then never ran it. It wrote out the command as prose and stopped. The
+documentation worked; the model knew exactly what to do and described it instead
+of doing it.
+
+Attempt 4 made one call, fetched `/api/events`, and answered with that URL as
+though it were the programme feed.
+
+Narrate-don't-act is now the dominant remaining failure mode across the two
+marginal tasks. There is no app change that fixes it — attempt 3 is proof, since
+the app had already told it everything it needed.
+
+### Following the eval's own rule found a bug the eval cannot reach
+
+`docs/EVAL.md` says: test what the customer asked for. It names three gaps
+against the brief. One had been closed (`what-did-we-send`). Checking the other
+two turned up this:
+
+**The submitter confirmation email — the customer's "must have" — fired on only
+one of the two ways a proposal becomes real.** Submit in one sitting and you get
+your reference code and a portal link. Save a draft on Friday and finish it on
+Sunday and you got nothing at all.
+
+`test/submit-confirmation.test.js` already existed with six tests about that
+exact email. All six passed throughout, because not one of them saved a draft
+first. The feature was covered; the second path through it was not.
+
+The send now lives in `core/submissions.js` beside `notify()`, reading the
+form's own flag and body itself, so the two call sites cannot drift apart again.
+Four new tests, two of which fail without the change.
+
+Then a sweep for the same shape: every other transition side effect already
+lives in core with exactly one caller. The confirmation was the only one left in
+a route, which is why it was the one that diverged. That is the rule worth
+keeping — **a side effect of a status change belongs to the change, not to the
+door somebody came in through.**
+
+Note what this says about the eval. Nine tasks, all organizer-side, and none of
+them could ever have caught it: no eval task is a speaker, so no eval task has
+ever saved a draft. Passing 7 of 9 is not the same as working.
+
+---
+
 ## Run 13 — 2026-08-10, 6 of 8, and the first run I would defend
 
 | Task | Run 12 | Run 13 |
