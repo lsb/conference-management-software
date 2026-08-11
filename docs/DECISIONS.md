@@ -278,3 +278,42 @@ signup. Scripts send a bearer token, because one header is something an
 - The test suite must pass identically under `npm test` and
   `HOST=0.0.0.0 npm test`. If those ever differ again, something has grown a
   dependency on how the server was started.
+
+## D13 — "What needs attention" is one list in core, not two in the interfaces
+
+`conf status` and `GET /api/events/<event>` answer the same question. Until
+Run 14 they answered it with two independent copies of the same five queries,
+written months apart. They agreed, and that agreement was luck: nothing stopped
+somebody adding a sixth item to one and not the other, and the CLI and the API
+would then have disagreed about whether a conference was in trouble.
+
+That is exactly what the two-interfaces rule exists to prevent, and the
+dashboard was the last place still breaking it. The list now lives in
+`src/core/attention.js`. Both interfaces read it and add only their own kind of
+pointer: a `conf` command on one side, a URL on the other.
+
+Deliberately kept different: the CLI prints every item including zeros, because
+"0 awaiting a decision" is information, and the API omits them, because
+`needs_attention` is a list of things that need attention. Phrasing may drift
+between them and it costs nothing. The *set of things checked* may not, and
+`test/attention.test.js` fails if it does — an item wired into core with no URL
+or no next command is caught on whichever side is missing.
+
+### The item that prompted it
+
+A speaker can withdraw from their own portal, which is right: making somebody
+email an organizer to pull out of a talk they cannot give is how you get a
+no-show instead of a gap you had time to fill. But it happened in silence. The
+session leaves the public agenda by itself, because every published query
+filters on status, so the app looked correct from outside while `conf status`
+reported nothing wrong and there was an empty room at 9am.
+
+The detector is `status = 'withdrawn'` while still holding a room or a time.
+Only `accept_queue` and `accepted` are ever given either, so a withdrawn row
+holding one was necessarily accepted first — exact, with no new column. It is
+also why the slot is left on the row rather than cleared: it is the evidence.
+
+A speaker who withdraws before anyone scheduled them is **not** counted. No
+column distinguishes that from a declined proposal being tidied away, and a
+dashboard that cries wolf is one people stop reading. Narrow and trusted beats
+broad and ignored.

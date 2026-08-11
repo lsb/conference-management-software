@@ -18,6 +18,7 @@ import {
   findConflicts, scheduledSessions, unscheduledSessions, placeSession,
   autoSchedule, localTime, localDay,
 } from './core/schedule.js';
+import { needsAttention } from './core/attention.js';
 import { readStoredFile } from './core/files.js';
 import { buildZip } from './core/zip.js';
 import { FEEDS, FORMATS, showsPeople } from './core/feeds.js';
@@ -210,43 +211,44 @@ const COMMANDS = {
 
   status(db, args) {
     const event = requireEvent(db, args._[1]);
-    const counts = Object.fromEntries(
-      db.prepare('SELECT status, count(*) AS n FROM submission WHERE event_id = ? GROUP BY status')
-        .all(event.id).map((r) => [r.status, r.n]),
-    );
-    const conflicts = findConflicts(db, event.id);
-    const summary = {
-      event: event.slug,
-      name: event.name,
-      submissions: counts,
-      awaiting_decision: counts.pending ?? 0,
-      awaiting_notification: awaitingNotification(db, event.id).length,
-      unscheduled: unscheduledSessions(db, event.id).length,
-      conflicts: conflicts.filter((c) => c.severity === 'error').length,
-      outstanding_tasks: outstandingTasks(db, event.id).length,
-      task_definitions: taskDefinitions(db, event.id).filter((t) => !t.retired_at).length,
+    const items = needsAttention(db, event.id);
+    const of = (key) => items.find((i) => i.key === key);
+
+    // Same list the API answers with, from core/attention.js. What differs is
+    // the pointer: a command here, a URL there.
+    const NEXT = {
+      awaiting_decision: `conf submissions ${event.slug} --status pending`,
+      awaiting_notification: `conf notify ${event.slug} --all --dry-run`,
+      withdrew_from_programme: `conf submissions ${event.slug} --status withdrawn`,
+      unscheduled: `conf autoschedule ${event.slug}`,
+      conflicts: `conf conflicts ${event.slug}`,
+      outstanding_tasks: `conf tasks ${event.slug}`,
     };
 
-    if (args.json) return output(args, summary);
+    if (args.json) {
+      return output(args, {
+        event: event.slug,
+        name: event.name,
+        submissions: Object.fromEntries(
+          db.prepare('SELECT status, count(*) AS n FROM submission WHERE event_id = ? GROUP BY status')
+            .all(event.id).map((r) => [r.status, r.n]),
+        ),
+        needs_attention: Object.fromEntries(items.map((i) => [i.key, i.count])),
+        withdrawn_from_slots: of('withdrew_from_programme').codes,
+      });
+    }
 
     console.log(`${event.name}  (${event.slug})`);
-    console.log(`  ${summary.awaiting_decision} awaiting a decision`
-      + (summary.awaiting_decision > 0 ? `  ->  conf submissions ${event.slug} --status pending` : ''));
-    console.log(`  ${summary.awaiting_notification} decided but not yet told`
-      + (summary.awaiting_notification > 0 ? `  ->  conf notify ${event.slug} --all --dry-run` : ''));
-    console.log(`  ${summary.unscheduled} without a time slot`
-      + (summary.unscheduled > 0 ? `  ->  conf autoschedule ${event.slug}` : ''));
-    console.log(`  ${summary.conflicts} scheduling conflicts`
-      + (summary.conflicts > 0 ? `  ->  conf conflicts ${event.slug}` : ''));
-    // A zero here means one of two very different things, and the difference
-    // matters: everybody is up to date, or nobody was ever asked for anything.
-    // The second reads as "all done" and is how an event reaches its speakers
-    // having never requested a bio, a headshot or a set of slides.
-    console.log(`  ${summary.outstanding_tasks} outstanding speaker tasks`
-      + (summary.outstanding_tasks > 0 ? `  ->  conf tasks ${event.slug}`
-        : summary.task_definitions === 0
-          ? `  (nothing is being asked of speakers)  ->  conf tasks ${event.slug} --definitions`
-          : ''));
+    for (const item of items) {
+      const next = item.count > 0 ? `  ->  ${NEXT[item.key]}` : '';
+      // Nobody being asked for anything reads as "all done" from a zero, and is
+      // how an event reaches its speakers having never requested a headshot.
+      const nobodyAsked = item.key === 'outstanding_tasks' && item.count === 0
+        && item.nothing_is_asked
+        ? `  (nothing is being asked of speakers)  ->  conf tasks ${event.slug} --definitions`
+        : '';
+      console.log(`  ${item.count} ${item.text}${next}${nobodyAsked}`);
+    }
     return 0;
   },
 

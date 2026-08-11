@@ -21,6 +21,7 @@ import { json, badRequest, notFound, forbidden } from '../http/router.js';
 import { decide, notify, awaitingNotification, participantsOf } from '../core/submissions.js';
 import { outstandingTasks, runReminders, taskDefinitions } from '../core/tasks.js';
 import { findConflicts, scheduledSessions, unscheduledSessions } from '../core/schedule.js';
+import { needsAttention as attentionItems } from '../core/attention.js';
 import { createMagicLink, canOrganize } from '../core/auth.js';
 import { audienceSizes, resolveAudience, UnknownAudienceError } from '../core/audience.js';
 import { searchPeople, personHistory, notesOn, tagsOn } from '../core/crm.js';
@@ -286,8 +287,6 @@ function getEvent(ctx) {
   const counts = statusCounts(ctx.db, event.id);
   const conflicts = findConflicts(ctx.db, event.id);
   const outstanding = outstandingTasks(ctx.db, event.id);
-  const unscheduled = unscheduledSessions(ctx.db, event.id);
-  const queued = awaitingNotification(ctx.db, event.id);
 
   // Sentences, not only numbers, and this is a parity fix rather than a
   // decoration. `conf status` answers "what needs attention" in the words the
@@ -300,21 +299,27 @@ function getEvent(ctx) {
   // Each carries the URL that shows the rows, which is the pattern
   // REQUIREMENTS.md singles out as the genuinely useful part of the dashboard:
   // a count and a link to the exact filtered list.
+  //
+  // The list itself comes from core/attention.js, so this and `conf status`
+  // cannot check different things. All this adds is where to look.
   const api = `${ctx.origin}/api/events/${event.slug}`;
-  const needsAttention = [];
-  const note = (count, text, where) => {
-    if (count > 0) needsAttention.push({ count, text, where });
+  const WHERE = {
+    awaiting_decision: `${api}/submissions?status=pending`,
+    awaiting_notification: `${api}/notify`,
+    withdrew_from_programme: `${api}/submissions?status=withdrawn`,
+    unscheduled: `${api}/agenda`,
+    conflicts: `${api}/conflicts`,
+    outstanding_tasks: `${api}/tasks`,
   };
 
-  note(counts.pending, `${counts.pending} submission(s) awaiting a decision`,
-    `${api}/submissions?status=pending`);
-  note(queued.length, `${queued.length} decided but not yet told`, `${api}/notify`);
-  note(unscheduled.length, `${unscheduled.length} accepted session(s) with no room or time`,
-    `${api}/agenda`);
-  note(conflicts.filter((c) => c.severity === 'error').length,
-    `${conflicts.filter((c) => c.severity === 'error').length} scheduling conflict(s)`,
-    `${api}/conflicts`);
-  note(outstanding.length, `${outstanding.length} outstanding speaker task(s)`, `${api}/tasks`);
+  const needsAttention = attentionItems(ctx.db, event.id)
+    .filter((item) => item.count > 0)
+    .map((item) => ({
+      count: item.count,
+      text: `${item.count} ${item.text}`,
+      where: WHERE[item.key],
+      ...(item.codes ? { codes: item.codes } : {}),
+    }));
 
   return json({
     ...eventShape(event),

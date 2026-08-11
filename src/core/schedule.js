@@ -42,6 +42,37 @@ export function unscheduledSessions(db, eventId) {
 }
 
 /**
+ * Sessions that hold a slot and have withdrawn: holes in the programme.
+ *
+ * A speaker can withdraw from their own portal, which is right -- making
+ * somebody email an organizer to pull out of a talk they cannot give is how you
+ * end up with a no-show instead of a gap you had time to fill. But it happened
+ * in complete silence: the session drops off the public agenda by itself,
+ * because every published query filters on status, and nothing anywhere told
+ * the organizers. `conf status` reported that nothing needed attention while
+ * there was an empty room at 9am.
+ *
+ * Only `accept_queue` and `accepted` are ever given a room or a time, so a
+ * withdrawn row still holding one was necessarily accepted first. That makes
+ * this exact rather than a guess, and it is why the slot is left on the row
+ * instead of being cleared: it is the evidence that the hole exists.
+ *
+ * A speaker who withdraws before anyone scheduled them is not counted here.
+ * There is no column that distinguishes it from a declined proposal being
+ * tidied away, and a dashboard that cries wolf is one people stop reading.
+ */
+export function withdrawnFromSlots(db, eventId) {
+  return db.prepare(
+    `SELECT s.id, s.code, s.title, s.starts_at, r.name AS room
+       FROM submission s
+       LEFT JOIN room r ON r.id = s.room_id
+      WHERE s.event_id = ? AND s.status = 'withdrawn'
+        AND (s.starts_at IS NOT NULL OR s.room_id IS NOT NULL)
+      ORDER BY s.starts_at, s.code`,
+  ).all(eventId);
+}
+
+/**
  * Everything wrong with the current schedule.
  *
  * Three kinds, in the order an organizer cares about them:
