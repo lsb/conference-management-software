@@ -264,6 +264,56 @@ export function notify(db, submissionIds, { actorPersonId = null, portalUrlFor }
   return report;
 }
 
+/**
+ * Tell a submitter we have their proposal.
+ *
+ * This belongs to the transition, not to the door somebody came in through. A
+ * proposal stops being a draft in two places -- a form filled in one sitting
+ * (routes/public.js) and a draft finished later in the portal
+ * (routes/portal.js) -- and for a long time only the first of them sent
+ * anything. Save a draft on Friday, submit it on Sunday, and you received no
+ * receipt at all: no reference code, no portal link, no evidence we had it.
+ * The customer annotated this requirement "must have".
+ *
+ * Nothing about it is decided by the caller. The form's own
+ * `send_confirmation_email` flag and custom body are read here, and the
+ * recipient is the person the submission is filed under, so the two paths
+ * cannot drift apart again the way they already did once.
+ *
+ * `portalUrlFor` matches notify(): core does not mint magic links or know the
+ * origin, so the route hands in a way to build the URL. Omit it and the mail
+ * still goes, without a link.
+ */
+export function confirmSubmission(db, submissionId, { portalUrlFor } = {}) {
+  const sub = db.prepare('SELECT * FROM submission WHERE id = ?').get(submissionId);
+  if (!sub) return null;
+
+  const form = db.prepare('SELECT * FROM form WHERE id = ?').get(sub.form_id);
+  if (form && !form.send_confirmation_email) return null;
+
+  const event = db.prepare('SELECT * FROM event WHERE id = ?').get(sub.event_id);
+  const person = db.prepare('SELECT * FROM person WHERE id = ?').get(sub.submitted_by_person_id);
+  if (!person) return null;
+
+  const template = getTemplate(db, sub.event_id, 'submission_confirmation');
+
+  return queueEmail(db, {
+    eventId: sub.event_id,
+    to: person,
+    subject: template.subject,
+    body: form?.confirmation_email_body || template.body,
+    kind: 'submission_confirmation',
+    templateSlug: 'submission_confirmation',
+    submissionId: sub.id,
+    vars: {
+      event_name: event.name,
+      submission_title: sub.title,
+      submission_code: sub.code,
+      portal_url: portalUrlFor ? portalUrlFor(person, event) : '',
+    },
+  });
+}
+
 /** Everything still waiting on a human decision. */
 export function pendingDecisions(db, eventId) {
   return db.prepare(

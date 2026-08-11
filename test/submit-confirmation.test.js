@@ -13,6 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newApp, get, post, redirectedTo } from './http-helpers.js';
+import { SESSION_COOKIE } from '../src/core/auth.js';
 
 async function callForSpeakers(app) {
   redirectedTo(await post(app, '/e/new', {
@@ -143,4 +144,85 @@ test('the email and the page offer the same keepsake link, and it is one-time', 
   assert.equal((await get(app, `/portal/${event}/enter?token=${pageToken}`)).status, 303);
   assert.equal((await get(app, `/portal/${event}/enter?token=${pageToken}`)).status, 410,
     'and it is genuinely one-time, not merely long-lived');
+});
+
+// --- the other way in ---------------------------------------------------------
+//
+// Everything above submits in one sitting. A draft is the other half of the
+// feature -- "a promise to come back" -- and for a long time coming back sent
+// nothing at all. Save on Friday, finish on Sunday, and you got no reference
+// code, no portal link, and no evidence anyone had your proposal. The six tests
+// above all passed throughout, because not one of them saved a draft first.
+
+/**
+ * Save a draft, then finish it from the portal the way its author would.
+ *
+ * Submitted as a stranger, not as the signed-in organizer the other tests use:
+ * the public form is the one door in this app that anybody may walk through,
+ * and the session it hands back is the speaker's own.
+ */
+async function draftThenSubmit(app, event, form, extra = {}) {
+  const saved = await post(app, `/submit/${event}/${form}`,
+    { ...PROPOSAL, ...extra, save_draft: '1' }, { cookies: {} });
+
+  const token = String(saved.headers['set-cookie']).match(/conf_session=([^;]+)/)[1];
+  const cookies = { [SESSION_COOKIE]: token };
+  const code = redirectedTo(saved).match(/submissions\/([^/]+)\/edit/)[1];
+
+  const sent = await post(app, `/portal/${event}/submissions/${code}/edit`,
+    { ...PROPOSAL, ...extra, submit_now: '1' }, { cookies });
+  return { code, sent, cookies };
+}
+
+test('a draft finished later gets the confirmation too', async () => {
+  const app = newApp();
+  const { event, form } = await callForSpeakers(app);
+
+  const { code } = await draftThenSubmit(app, event, form);
+
+  const message = confirmation(app);
+  assert.ok(message, 'finishing a draft is submitting, and a submitter gets a receipt');
+  assert.match(message.body, new RegExp(code),
+    'the receipt has to carry the reference code, which is the point of it');
+
+  const [token] = tokensIn(message.body);
+  assert.ok(token, 'and a way back into the portal');
+  assert.equal((await get(app, `/portal/${event}/enter?token=${token}`)).status, 303,
+    'a live link, not a spent one');
+});
+
+test('saving a draft alone confirms nothing', async () => {
+  const app = newApp();
+  const { event, form } = await callForSpeakers(app);
+
+  await post(app, `/submit/${event}/${form}`, { ...PROPOSAL, save_draft: '1' });
+
+  assert.equal(confirmation(app), undefined,
+    'organizers cannot see a draft, so telling its author we have it is a lie');
+});
+
+test('finishing a draft confirms exactly once', async () => {
+  const app = newApp();
+  const { event, form } = await callForSpeakers(app);
+
+  const { code, cookies } = await draftThenSubmit(app, event, form);
+  // Editing an already-submitted proposal is allowed; re-confirming it is not.
+  await post(app, `/portal/${event}/submissions/${code}/edit`,
+    { ...PROPOSAL, submit_now: '1' }, { cookies });
+
+  const { n } = app.db.prepare(
+    `SELECT count(*) AS n FROM outbox WHERE kind = 'submission_confirmation'`).get();
+  assert.equal(n, 1, 'one proposal, one receipt, however many times it is saved');
+});
+
+test('a form with confirmations off stays off on the draft path too', async () => {
+  const app = newApp();
+  const { event, form } = await callForSpeakers(app);
+  await post(app, `/e/${event}/forms/${form}/settings`,
+    { internal_name: 'CFP 2027', settings_form: '1' });   // box unticked
+
+  await draftThenSubmit(app, event, form);
+
+  assert.equal(confirmation(app), undefined,
+    'the setting belongs to the form, not to the door somebody came in through');
 });

@@ -4,9 +4,8 @@
 import { html, page, raw } from '../http/html.js';
 import { ok, redirect, badRequest, notFound } from '../http/router.js';
 import { now, slugify, uniqueSlug } from '../db.js';
-import { createSubmission, setStatus, logActivity } from '../core/submissions.js';
+import { createSubmission, setStatus, logActivity, confirmSubmission } from '../core/submissions.js';
 import { routeSubmission } from '../core/routing.js';
-import { queueEmail, getTemplate } from '../core/mail.js';
 import { createMagicLink, SESSION_COOKIE, consumeMagicLink } from '../core/auth.js';
 import { cookieHeader } from '../http/request.js';
 import { scheduledSessions } from '../core/schedule.js';
@@ -373,9 +372,8 @@ function postCfp(ctx) {
   //
   // Only for a real submission. A draft is a promise to come back, and putting
   // half an idea in front of a reviewer would waste their time and embarrass
-  // its author. A draft should be routed at the moment it is submitted for
-  // real, which is one call to this same function from the portal's submit step
-  // (src/routes/portal.js). That call is not wired yet.
+  // its author. A draft is routed when it is submitted for real, by the same
+  // call in the portal's submit step (src/routes/portal.js).
   //
   // This never throws: routing that cannot be carried out is recorded against
   // the submission rather than costing a stranger their proposal.
@@ -398,24 +396,7 @@ function postCfp(ctx) {
   // A draft has not been submitted, so there is nothing to confirm. Sending
   // "we have your proposal" for something the organizers cannot see would be a
   // lie the speaker acts on.
-  if (form.send_confirmation_email && !asDraft) {
-    const template = getTemplate(ctx.db, event.id, 'submission_confirmation');
-    queueEmail(ctx.db, {
-      eventId: event.id,
-      to: person,
-      subject: template.subject,
-      body: form.confirmation_email_body || template.body,
-      kind: 'submission_confirmation',
-      templateSlug: 'submission_confirmation',
-      submissionId: submission.id,
-      vars: {
-        event_name: event.name,
-        submission_title: submission.title,
-        submission_code: submission.code,
-        portal_url: portalUrl,
-      },
-    });
-  }
+  if (!asDraft) confirmSubmission(ctx.db, submission.id, { portalUrlFor: () => portalUrl });
 
   logActivity(ctx.db, { eventId: event.id, actorPersonId: person.id, subjectType: 'submission',
     subjectId: submission.id, verb: asDraft ? 'drafted' : 'submitted', detail: form.slug });
