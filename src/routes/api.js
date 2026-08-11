@@ -76,8 +76,10 @@ export function mountApi(router) {
     'Queue reminder emails. Body: {"dry_run":true} to preview without sending.');
 
   router.get('/api/events/:event/outbox', listOutbox,
-    'Messages generated for this event, newest first. Envelopes only: no bodies here. '
-    + 'What a message actually said is at /api/events/<event>/outbox/<id>, using the id in each row.');
+    'Every message this app has generated for this event, newest first -- which is how '
+    + '"what did we actually send them, and when" is answered. ?person=<slug> or '
+    + '?submission=<CODE> narrows it. Envelopes only: what a message SAID is at '
+    + '/api/events/<event>/outbox/<id>, using the id in each row.');
 
   router.get('/api/events/:event/outbox/:id', getOutboxMessage,
     'One message in full, including the body. Ids come from the outbox list.');
@@ -150,18 +152,23 @@ const personShape = (p) => ({
   primary_contact: p.is_primary_contact ? true : undefined,
 });
 
-function submissionShape(db, s) {
+function submissionShape(ctx, event, s) {
   return {
     code: s.code,
     title: s.title,
     status: s.status,
     track: s.track_slug ?? null,
     format: s.format_label ?? null,
-    speakers: participantsOf(db, s.id).map((p) => ({ slug: p.slug, name: fullName(p) })),
+    speakers: participantsOf(ctx.db, s.id).map((p) => ({ slug: p.slug, name: fullName(p) })),
     decided_at: s.decided_at,
     notified_at: s.notified_at,
     scheduled: s.starts_at ? { room: s.room_slug ?? null, starts_at: s.starts_at, ends_at: s.ends_at } : null,
     published: Boolean(s.published),
+    // "What did we send them about this?" is the next question often enough to
+    // travel with the answer to this one. Asked it directly, a model guessed at
+    // /api/notifications, never found the outbox, and made a subject line up --
+    // while holding this record, which knows exactly which messages are its own.
+    messages: `${ctx.origin}/api/events/${event.slug}/outbox?submission=${s.code}`,
   };
 }
 
@@ -362,7 +369,7 @@ function listSubmissions(ctx) {
     count: rows.length,
     filtered: Boolean(status || track || q) || undefined,
     by_status: statusCounts(ctx.db, event.id),
-    submissions: rows.map((s) => submissionShape(ctx.db, s)),
+    submissions: rows.map((s) => submissionShape(ctx, event, s)),
   });
 }
 
@@ -385,7 +392,7 @@ function getSubmission(ctx) {
   ).all(found.id);
 
   return json({
-    ...submissionShape(ctx.db, s),
+    ...submissionShape(ctx, event, s),
     description: s.description,
     speakers: participantsOf(ctx.db, found.id).map(personShape),
     answers: Object.fromEntries(answers.map((a) => [a.slug, a.value])),
@@ -407,7 +414,7 @@ function decideOne(ctx) {
   const after = ctx.db.prepare(`${SUBMISSION_SELECT} WHERE s.id = ?`).get(submission.id);
 
   return json({
-    ...submissionShape(ctx.db, after),
+    ...submissionShape(ctx, event, after),
     note: 'Decision recorded. No email has been sent. '
       + `POST /api/events/${event.slug}/notify with {"codes":["${submission.code}"]} to tell the speakers.`,
   });
@@ -652,11 +659,35 @@ function listOutbox(ctx) {
   const event = findEvent(ctx.db, ctx.params.event);
   requireOrganizer(ctx, event);
 
+  // Filterable, because "what did we send this person" is the question the
+  // outbox exists to answer and scanning two hundred envelopes for it is not an
+  // answer. Asked exactly that, a model guessed /api/notifications?speaker=...
+  // twice, never found the outbox at all, and invented a subject line.
+  const where = ['o.event_id = ?'];
+  const args = [event.id];
+
+  const code = ctx.query.get('submission');
+  if (code) {
+    where.push('s.code = ?');
+    args.push(code.toUpperCase());
+  }
+
+  const personSlug = ctx.query.get('person');
+  if (personSlug) {
+    const person = ctx.db.prepare('SELECT id, email FROM person WHERE slug = ?').get(personSlug);
+    if (!person) {
+      throw badRequest(`no person with slug '${personSlug}'`,
+        `they are listed at /api/events/${event.slug}/speakers and /api/people`);
+    }
+    where.push('(o.to_person_id = ? OR lower(o.to_email) = lower(?))');
+    args.push(person.id, person.email);
+  }
+
   const rows = ctx.db.prepare(
     `SELECT o.*, s.code AS submission_code FROM outbox o
        LEFT JOIN submission s ON s.id = o.submission_id
-      WHERE o.event_id = ? ORDER BY o.id DESC LIMIT 200`,
-  ).all(event.id);
+      WHERE ${where.join(' AND ')} ORDER BY o.id DESC LIMIT 200`,
+  ).all(...args);
 
   return json({
     event: event.slug,

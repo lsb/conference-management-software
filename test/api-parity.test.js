@@ -669,3 +669,40 @@ test('every slug a write requires travels on the event', async () => {
     assert.ok(body[what][0].slug, `and each ${what} entry needs its slug`);
   }
 });
+
+test('a submission says where its own messages are, and the outbox narrows', async () => {
+  // "What did we actually send them?" is the question the outbox exists for.
+  // Asked it directly, a model guessed /api/notifications?speaker=... twice,
+  // never found the outbox at all, and invented a subject line -- while holding
+  // the submission record, which knows exactly which messages are its own.
+  const { app, slug } = await organizerApp();
+  await post(app, `/e/${slug}/forms`, { internal_name: 'CFP', with_defaults: '1' });
+  const form = (await get(app, `/e/${slug}/forms`)).body.match(/\/forms\/([a-z0-9-]+)"/)[1];
+  await post(app, `/submit/${slug}/${form}`, {
+    title: 'A talk', description: 'x', format: 'talk-30-min', track: 'ai-engineering',
+    'first-name': 'Priya', 'last-name': 'Raman', email: 'priya@example.com',
+    biography: 'Engineer.',
+  });
+
+  const list = JSON.parse((await get(app, `/api/events/${slug}/submissions`)).body);
+  const one = list.submissions[0];
+  assert.match(one.messages, /\/outbox\?submission=/,
+    'the record should say where to find what was sent about it');
+
+  const narrowed = JSON.parse((await get(app,
+    `/api/events/${slug}/outbox?submission=${one.code}`)).body);
+  assert.ok(narrowed.messages.length > 0, 'and that URL should answer');
+  assert.ok(narrowed.messages.every((m) => m.submission === one.code),
+    'with only that submission\'s messages');
+
+  const byPerson = JSON.parse((await get(app,
+    `/api/events/${slug}/outbox?person=priya-raman`)).body);
+  assert.ok(byPerson.messages.length > 0, 'and ?person= should work too');
+});
+
+test('an unknown person on the outbox filter is refused, naming where the list is', async () => {
+  const { app, slug } = await organizerApp();
+  const err = await failure(get(app, `/api/events/${slug}/outbox?person=nobody-at-all`));
+  assert.equal(err.status, 400);
+  assert.match(err.hint, /\/api\/people|speakers/);
+});
