@@ -277,6 +277,12 @@ function getEvent(ctx) {
       WHERE event_id = ? AND kind = 'submission' ORDER BY id`,
   ).all(event.id);
 
+  // Audiences too, for the same reason. POST /e/<event>/mail will not send
+  // without one, so an audience key is a prerequisite exactly like a room slug,
+  // and it was reachable only from a route you had to know existed. Keys and
+  // sizes only -- who is in one is a separate question with its own route.
+  const audiences = audienceSizes(ctx.db, event.id);
+
   const counts = statusCounts(ctx.db, event.id);
   const conflicts = findConflicts(ctx.db, event.id);
   const outstanding = outstandingTasks(ctx.db, event.id);
@@ -325,6 +331,7 @@ function getEvent(ctx) {
       closes_at: f.close_at ?? null,
       submit_at: `${ctx.origin}/submit/${event.slug}/${f.slug}`,
     })),
+    audiences: audiences.map((a) => ({ key: a.key, count: a.count })),
   });
 }
 

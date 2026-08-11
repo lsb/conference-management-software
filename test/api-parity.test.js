@@ -663,10 +663,14 @@ test('every slug a write requires travels on the event', async () => {
     ['tracks', 'named when sorting or routing a proposal'],
     ['review_rounds', 'named when routing a proposal to a review round'],
     ['forms', 'named in the URL of every form-scoped write'],
+    ['audiences', 'named before POST /e/<event>/mail will send anything'],
   ]) {
     assert.ok(Array.isArray(body[what]) && body[what].length > 0,
       `${what} should be on the event: ${why}`);
-    assert.ok(body[what][0].slug, `and each ${what} entry needs its slug`);
+    // Audiences are named by `key` rather than `slug`, which is the word the
+    // mail form asks for; everything else is a slug.
+    const name = what === 'audiences' ? 'key' : 'slug';
+    assert.ok(body[what][0][name], `and each ${what} entry needs its ${name}`);
   }
 });
 
