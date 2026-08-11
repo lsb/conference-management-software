@@ -398,9 +398,18 @@ export function runReminders(db, eventId, { asOf = now(), portalUrlFor, dryRun =
     const dueMs = Date.parse(task.due_at);
     if (Number.isNaN(dueMs)) continue;
 
-    for (const { rule, offsetDays } of REMINDER_RULES) {
-      const threshold = dueMs + offsetDays * 86_400_000;
-      if (asOfMs < threshold) continue;
+    // Every rung this task has already passed, most severe first.
+    //
+    // Ordering matters when more than one has been crossed at the same time,
+    // which happens whenever reminders are switched on after a due date has
+    // gone by -- a late-configured event, an import, or simply nobody running
+    // them for a week. Taking the ladder in order would send "due in 7 days"
+    // about something overdue since 2020.
+    const crossed = REMINDER_RULES
+      .filter((r) => asOfMs >= dueMs + r.offsetDays * 86_400_000)
+      .reverse();
+
+    for (const { rule } of crossed) {
       if (alreadySent.get(task.id, rule)) continue;
 
       if (!dryRun) {
@@ -423,7 +432,17 @@ export function runReminders(db, eventId, { asOf = now(), portalUrlFor, dryRun =
             portal_url: portalUrlFor ? portalUrlFor({ id: task.person_id, slug: task.person_slug }, event) : '',
           },
         });
-        recordSent.run(task.id, rule, asOf);
+        // Retire every rung already passed, not only the one just sent.
+        //
+        // Marking one at a time made the docstring's promise false: three runs
+        // in a row against a task overdue by longer than the ladder is deep
+        // sent three identical emails, one per rung, seconds apart. The
+        // guarantee people actually rely on is per task per threshold-crossing,
+        // not per rule, and a rung whose moment passed unsent has no message
+        // left to deliver -- the one that just went out said it.
+        for (const passed of crossed) {
+          if (!alreadySent.get(task.id, passed.rule)) recordSent.run(task.id, passed.rule, asOf);
+        }
       }
 
       queued.push({ taskInstanceId: task.id, rule, email: task.email, task: task.task_title });

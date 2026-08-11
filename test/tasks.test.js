@@ -42,12 +42,26 @@ test('running the reminder engine repeatedly mails nobody twice', () => {
   assert.equal(outboxFor(db, { kind: 'task_reminder' }).length, 1);
 });
 
-test('at most one reminder per task per run, even when several rules are overdue', () => {
+test('a task past every threshold gets one reminder, and it is the overdue one', () => {
   const { db, event } = acceptedSpeakerWithTask();
-  // First run happens long after every threshold has passed.
+
+  // Reminders switched on after the due date has gone by: a late-configured
+  // event, an import, or nobody having run them for a fortnight. All three
+  // rungs have been crossed at once.
   const queued = runReminders(db, event.id, { asOf: daysFrom(DUE, 60) });
   assert.equal(queued.length, 1, 'one message, not a burst of three');
-  assert.equal(queued[0].rule, 'due_in_7_days');
+  assert.equal(queued[0].rule, 'overdue_by_1_day',
+    'telling somebody a thing is "due in 7 days" when it was due two months ago '
+    + 'is the wrong rung of the ladder to pick');
+
+  // The bug this replaced: rungs were retired one per run, so running the
+  // engine again -- which the docstring promises is safe -- delivered the next
+  // one down. Three identical emails, seconds apart, to a speaker who is
+  // already late and does not need telling three times.
+  runReminders(db, event.id, { asOf: daysFrom(DUE, 60) });
+  runReminders(db, event.id, { asOf: daysFrom(DUE, 61) });
+  assert.equal(outboxFor(db, { kind: 'task_reminder' }).length, 1,
+    'a rung whose moment passed unsent has no message left to deliver');
 });
 
 test('finishing the task stops the reminders', () => {
